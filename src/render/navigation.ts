@@ -59,7 +59,7 @@ export class Navigation {
 
   private clamp() {
     const p = this.camera.position;
-    const maximumRadius = this.settings.radius - this.settings.terrainHeight * 1.9 - 0.01;
+    const maximumRadius = this.settings.radius - this.settings.terrainHeight * 1.9 - 0.04;
     const r = Math.hypot(p.x, p.y);
     if (r > maximumRadius) { p.x *= maximumRadius / r; p.y *= maximumRadius / r; }
     p.z = THREE.MathUtils.clamp(p.z, -this.settings.length / 2 + 0.03, this.settings.length / 2 - 0.03);

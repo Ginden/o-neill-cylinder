@@ -7,6 +7,7 @@ import { particleOptics, PHASE_TABLE_SIZE, SPECTRAL_BINS } from './mie';
 import { LAMP_RADIANCE_SCALE, SOLAR_ILLUMINANCE } from './solar';
 import type { WeatherSnapshot } from '../weather/client';
 import common from './shaders/common.glsl?raw';
+import landscape from './shaders/landscape.glsl?raw';
 import surface from './shaders/surface.glsl?raw';
 import atmosphere from './shaders/atmosphere.glsl?raw';
 import geometry from './shaders/geometry.glsl?raw';
@@ -16,7 +17,7 @@ import tonemap from './shaders/tonemap.glsl?raw';
 import { SOLAR_WHITE_BALANCE } from './color';
 import spectrum from './shaders/spectrum.glsl?raw';
 import guides from './shaders/guides.glsl?raw';
-import { NavigationPreview } from './preview';
+import { atlasSize,NavigationPreview } from './preview';
 import { DisplayDenoiser,ExposureMeter } from './postprocess';
 
 export class HabitatRenderer {
@@ -34,7 +35,7 @@ export class HabitatRenderer {
   private readonly material: THREE.ShaderMaterial;
   private readonly displayMaterial: THREE.ShaderMaterial;
   private readonly displayScene = new THREE.Scene();
-  private readonly targets = [0,1].map(() => new THREE.WebGLRenderTarget(1,1,{type:THREE.FloatType,depthBuffer:false,stencilBuffer:false}));
+  private readonly targets = [0,1].map(() => new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false,stencilBuffer:false}));
   private targetIndex=0;
   private readonly previousCamera = new THREE.Matrix4();
   private physicalState='';
@@ -72,7 +73,7 @@ export class HabitatRenderer {
       glslVersion: THREE.GLSL3,
       depthTest: false, depthWrite: false,
       vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: common + surface + geometry + spectrum + transport + atmosphere,
+      fragmentShader: common + landscape + surface + geometry + spectrum + transport + atmosphere,
       uniforms: {
         uRadius: { value: settings.radius }, uLength: { value: settings.length },
         uGravity: { value: settings.gravity }, uPressure: { value: settings.pressure },
@@ -80,7 +81,7 @@ export class HabitatRenderer {
         uWindowFraction: { value: settings.windowFraction },
         uWindowTransmission: { value: settings.windowTransmission },
         uTerrainHeight: { value: settings.terrainHeight }, uAerosol: { value: settings.aerosol },
-        uTerrain:{value:null},uCachedTerrain:{value:true},
+        uTerrain:{value:null},uAnchorTerrain:{value:null},uCachedTerrain:{value:true},uLandCover:{value:null},uLandUse:{value:true},
         uSolarPower: { value: settings.solarPower },
         uAerosolPhase:{value:this.particleTextures[0]},uCloudPhase:{value:this.particleTextures[1]},
         uAerosolScale:{value:1},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE},uLampScale:{value:LAMP_RADIANCE_SCALE},
@@ -95,23 +96,25 @@ export class HabitatRenderer {
         uWeather: { value: this.weather }, uInverseProjection: { value: this.camera.projectionMatrixInverse },
         uCameraMatrix: { value: this.camera.matrixWorld }, uCameraPosition: { value: this.camera.position },
         uResolution: { value: new THREE.Vector2(1, 1) }, uSteps: { value: 56 },
-        uDiagnostic: { value: 0 }, uSample:{value:0},uPrevious:{value:this.targets[0].texture}
+        uDiagnostic: { value: 0 }, uSample:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
     this.displayMaterial=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
       vertexShader:'void main() { gl_Position=vec4(position.xy,0.0,1.0); }',fragmentShader:'uniform float uReferenceIlluminance;\n'+tonemap+display,
-      uniforms:{uImage:{value:this.targets[0].texture},uExposure:{value:settings.exposure},
+      uniforms:{uImage:{value:this.targets[0].textures[0]},uExposure:{value:settings.exposure},
         uAdaptive:{value:settings.adaptiveExposure},uWhiteBalance:{value:SOLAR_WHITE_BALANCE},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE},
         uDiagnostic:{value:0},uDisplayResolution:{value:new THREE.Vector2(1,1)}}});
     this.displayScene.add(new THREE.Mesh(this.geometry,this.displayMaterial));
     this.preview=new NavigationPreview(this.material.uniforms,this.geometry);
     this.material.uniforms.uTerrain.value=this.preview.terrain.texture;
+    this.material.uniforms.uAnchorTerrain.value=this.preview.anchors.texture;
+    this.material.uniforms.uLandCover.value=this.preview.cover.texture;
     this.denoiser=new DisplayDenoiser(this.geometry);
     this.exposureMeter=new ExposureMeter(this.geometry);
     this.guideMaterial=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
       vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
-      fragmentShader:common+surface+geometry+guides,uniforms:this.material.uniforms});
+      fragmentShader:common+landscape+surface+geometry+guides,uniforms:this.material.uniforms});
     this.guideScene.add(new THREE.Mesh(this.geometry,this.guideMaterial));
     this.apply(settings);
   }
@@ -194,7 +197,8 @@ export class HabitatRenderer {
     this.exposure=s.exposure;this.adaptiveExposure=s.adaptiveExposure;
     this.displayMaterial.uniforms.uAdaptive.value=s.adaptiveExposure;
     this.denoise=s.denoise;
-    const terrainState=JSON.stringify([s.radius,s.length,s.terrainHeight]);
+    const terrainState=JSON.stringify([s.radius,s.length,s.terrainHeight,s.windowFraction,s.quality]);
+    if (terrainState!==this.terrainState) this.preview.resizeAtlas(...atlasSize(s.radius,s.length,s.quality==='fast' ? 2048 : 4096));
     const physicalState=JSON.stringify([scalar,particleState,s.sunAzimuth,s.sunElevation,s.mirrorTilt,s.lightMode,s.quality,s.diagnostic]);
     this.preview.invalidate(terrainState!==this.terrainState,physicalState!==this.physicalState);
     this.terrainState=terrainState;
@@ -204,14 +208,14 @@ export class HabitatRenderer {
   private resetAccumulation() {this.samples=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
 
   resize(width: number, height: number, quality: Settings['quality']) {
-    const scale = { fast: 0.45, balanced: 0.7, high: 1 }[quality];
+    const scale = { fast: 0.5, balanced: 1, high: 1 }[quality];
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     const size=this.renderer.getDrawingBufferSize(new THREE.Vector2());
     this.displayMaterial.uniforms.uDisplayResolution.value.copy(size);
-    const budget={fast:98304,balanced:524288,high:1572864}[quality];
+    const budget={fast:196608,balanced:1048576,high:4194304}[quality];
     const reduction=Math.min(1,Math.sqrt(budget/(size.x*size.y*scale*scale)));
     const x=Math.max(16,Math.floor(size.x*scale*reduction)),y=Math.max(16,Math.floor(size.y*scale*reduction));
     this.material.uniforms.uResolution.value.set(x,y);
@@ -253,14 +257,15 @@ export class HabitatRenderer {
     this.targetIndex=1-this.targetIndex;
     const target=this.targets[this.targetIndex];
     this.material.uniforms.uSample.value=this.samples;
-    this.material.uniforms.uPrevious.value=previous.texture;
+    this.material.uniforms.uPrevious.value=previous.textures[0];
+    this.material.uniforms.uPreviousHaze.value=previous.textures[1];
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.screenCamera);
     this.renderer.setRenderTarget(null);
     this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
-      ? this.denoiser.filter(this.renderer,target.texture,this.guideTarget,this.samples+1) : target.texture;
+      ? this.denoiser.filter(this.renderer,target,this.guideTarget,this.samples+1) : target.textures[0];
     if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
-      this.exposureMeter.measure(this.renderer,target.texture);
+      this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);
     this.samples++;
     this.canvas.dataset.samples=String(this.samples);

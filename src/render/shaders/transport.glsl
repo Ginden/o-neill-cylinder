@@ -186,12 +186,47 @@ bool mediumEvent(vec3 p,vec3 d,float distance,inout float weight,out vec3 point,
 
 float powerWeight(float a,float b) {return a*a/(a*a+b*b);}
 
-// Next-event estimation samples the finite Sun and tests the entire aperture →
-// mirror → Sun connection. No ray may receive a beam just because of its sector.
-float directLight(vec3 p,vec3 normal,vec3 outgoing,int species,float albedo) {
+// Sunlight enters along hull routes: directly through a pane, or by one mirror
+// and a pane. The analytic hull decides which routes can carry a sampled solar
+// direction to p; terrain, media and glass losses are applied afterwards. A
+// closed route contributes nothing, so sampling only open routes is unbiased.
+vec3 routeDirection(int source,vec3 sun) {return source==0 ? sun : reflect(sun,uMirrorNormal[source-1]);}
+float routeWeight(vec3 p,vec3 direction,vec3 sun) {
+  vec3 opening=p+direction*boundaryDistance(p,direction);
+  if (!windowOpening(opening) || abs(length(opening.xy)-uRadius)>0.001) return 0.0;
+  vec3 outside=opening+direction*(EPS*4.0),leaving=direction;
+  float weight=exteriorPath(outside,leaving);
+  return dot(leaving,sun)<0.9999999 ? 0.0 : weight;
+}
+// Exterior throughput of each route (x: direct, yzw: mirrors) and the number open.
+vec4 openRoutes(vec3 p,vec3 sun,out int count) {
+  vec4 weights=vec4(0.0);
+  count=0;
+  for (int source=0;source<4;source++) {
+    if (source>uMirrorCount) break;
+    weights[source]=routeWeight(p,routeDirection(source,sun),sun);
+    if (weights[source]>0.0) count++;
+  }
+  return weights;
+}
+
+// Next-event estimation samples the finite Sun, then one open route, and tests
+// the entire aperture → mirror → Sun connection. `weighted` applies multiple
+// importance sampling against BSDF or phase sampling; the forced camera-segment
+// estimate has no such partner.
+float directLight(vec3 p,vec3 normal,vec3 outgoing,int species,float albedo,bool weighted) {
   vec3 sun=solarSample();
-  int source=int(randomValue()*float(uMirrorCount+1));
-  vec3 direction=source==0 ? sun : reflect(sun,uMirrorNormal[source-1]);
+  int count;
+  vec4 routes=openRoutes(p,sun,count);
+  if (count==0) return 0.0;
+  int pick=min(count-1,int(randomValue()*float(count))),source=0;
+  for (int i=0;i<4;i++) {
+    if (routes[i]>0.0) {
+      if (pick==0) {source=i;break;}
+      pick--;
+    }
+  }
+  vec3 direction=routeDirection(source,sun);
   float samplingPdf=species<0 ? max(0.0,dot(normal,direction))/PI : phasePdf(dot(outgoing,direction),species);
   float phase=species<0 ? samplingPdf : phasePhysical(dot(outgoing,direction),species);
   if(species==-2) {
@@ -201,25 +236,31 @@ float directLight(vec3 p,vec3 normal,vec3 outgoing,int species,float albedo) {
   if (phase<=0.0) return 0.0;
   float distance=traceInterior(p,direction);
   vec3 opening=p+direction*distance;
-  if (!windowOpening(opening)) return 0.0;
-  // Check that this is the wall, rather than a terrain point with the same angle.
-  if (abs(length(opening.xy)-uRadius)>0.001) return 0.0;
+  // The hull test passed; this rejects terrain, trees or roofs in the way.
+  if (!windowOpening(opening) || abs(length(opening.xy)-uRadius)>0.001) return 0.0;
   float transmission=glassPlate(dot(normalize(opening.xy),direction.xy)).y;
-  vec3 outsidePoint=opening+direction*(EPS*4.0),externalDirection=direction;
-  float externalWeight=exteriorPath(outsidePoint,externalDirection);
-  if (externalWeight==0.0 || dot(externalDirection,sun)<0.9999999) return 0.0;
-  float lightPdf=1.0/(float(uMirrorCount+1)*SUN_SOLID_ANGLE);
-  float mis=powerWeight(lightPdf,samplingPdf);
-  return albedo*phase*float(uMirrorCount+1)*solarIrradiance()*transmission*externalWeight*mis*shadowTransmission(p,direction,distance);
+  float lightPdf=1.0/(float(count)*SUN_SOLID_ANGLE);
+  float mis=weighted ? powerWeight(lightPdf,samplingPdf) : 1.0;
+  return albedo*phase*float(count)*solarIrradiance()*transmission*routes[source]*mis*shadowTransmission(p,direction,distance);
 }
 
-float pathRadiance(vec3 p,vec3 direction) {
-  float weight=1.0,radiance=0.0;
+// Returns total radiance and the haze part: single scattering of air on the
+// camera segment plus paths whose first event is a medium collision there. The
+// display filter treats it separately from light reflected by visible surfaces.
+vec2 pathRadiance(vec3 p,vec3 direction) {
+  float weight=1.0,radiance=0.0,scattered=0.0;
+  bool haze=false;
   float lastPdf=0.0;
+  vec3 lastVertex=p;
   bool neeReachable=true;
   bool inside=true;
-  int mirrorBounces=0;
-  for (int depth=0;depth<64;depth++) {
+  int mirrorBounces=0,order=0;
+  // Every camera ray estimates single scattering by air with one forced
+  // collision on its segment; analog air collisions there omit that term
+  // (no next-event estimate, no direct solar hit) to avoid counting it twice.
+  bool forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0,singleAir=false,cameraSegment=true;
+  float pending=-1.0;
+  for (int iteration=0;iteration<65;iteration++) {
     if (!inside) {
       float closest=shellHit(p,direction);
       int panel=-1;
@@ -230,8 +271,13 @@ float pathRadiance(vec3 p,vec3 direction) {
       }
       if (closest>1e19) {
         float solar=dot(direction,uSun)>=cos(SOLAR_RADIUS) ? solarRadiance() : 0.0;
-        float lightPdf=1.0/(float(uMirrorCount+1)*SUN_SOLID_ANGLE);
-        float mis=lastPdf==0.0 || !neeReachable || mirrorBounces>1 ? 1.0 : powerWeight(lastPdf,lightPdf);
+        float mis=1.0;
+        if (solar>0.0 && lastPdf>0.0 && neeReachable && mirrorBounces<=1) {
+          // Next-event estimation chose among the routes open at the last vertex.
+          int count;
+          openRoutes(lastVertex,direction,count);
+          mis=singleAir ? 0.0 : powerWeight(lastPdf,1.0/(float(max(count,1))*SUN_SOLID_ANGLE));
+        }
         radiance+=weight*solar*mis;
         break;
       }
@@ -249,60 +295,101 @@ float pathRadiance(vec3 p,vec3 direction) {
       else {weight*=glass.y/max(1.0-glass.x,1e-8);inside=true;neeReachable=false;}
       p=hit+direction*(EPS*4.0);continue;
     }
-    float distance=traceInterior(p,direction);
+    landObjects=order<2;
+    float distance=pending>=0.0 ? pending : traceInterior(p,direction);
+    pending=-1.0;
     vec3 point;int species;
-    if (mediumEvent(p,direction,distance,weight,point,species)) {
-      radiance+=weight*directLight(point,vec3(0),direction,species,1.0);
+    // Each iteration makes at most one next-event connection after choosing its
+    // continuation. A single call site keeps one inlined visibility test.
+    bool connect=false,alive=true,roulette=true,weighted=true;
+    float connectWeight=weight,connectAlbedo=1.0;
+    vec3 connectPoint=p,connectNormal=vec3(0),connectOutgoing=vec3(0);
+    int connectSpecies=-1;
+    if (forced) {
+      // The collision is sampled ∝ majorant transmittance on the segment; ratio
+      // tracking estimates the real transmittance. The next iteration repeats
+      // this segment with the analog collision or surface hit.
+      forced=false;pending=distance;roulette=false;
+      float survival=exp(-uAirMajorant*distance);
+      float t=-log(max(1e-12,1.0-randomValue()*(1.0-survival)))/uAirMajorant;
+      vec3 q=p+direction*t;
+      float density=airDensity(q);
+      float molecular=sigmaRayleigh*density,scattering=molecular+sigmaAerosol.y*density;
+      if (scattering>0.0) {
+        connect=true;weighted=false;connectPoint=q;connectOutgoing=direction;
+        connectSpecies=randomValue()*scattering<molecular ? 0 : 1;
+        connectWeight=weight*scattering*(1.0-survival)/(uAirMajorant*exp(-uAirMajorant*t))*shadowTransmission(p,direction,t);
+      }
+    } else if (mediumEvent(p,direction,distance,weight,point,species)) {
+      // Only the camera segment itself; segments after a pane reflection are not
+      // covered by the forced estimate.
+      singleAir=cameraSegment && species<2;cameraSegment=false;
+      connect=!singleAir;connectWeight=weight;connectPoint=point;connectOutgoing=direction;connectSpecies=species;
+      haze=haze || order==0;
       vec3 next=phaseSample(direction,species);
       lastPdf=phasePdf(dot(direction,next),species);
       weight*=phasePhysical(dot(direction,next),species)/max(lastPdf,1e-10);
-      direction=next;p=point;neeReachable=true;
+      direction=next;p=point;lastVertex=point;neeReachable=true;order++;
     } else {
       if (weight<=0.0) break;
+      cameraSegment=false;
       vec3 hit=p+direction*distance;
-      vec3 normal=interiorNormal(hit);
+      bool cap=abs(hit.z)>=uLength*0.5-0.001;
+      bool pane=!cap && windowAt(atan(hit.y,hit.x)) && abs(length(hit.xy)-uRadius)<0.001;
+      vec2 id;
+      float kind=cap || pane ? 0.0 : landKind(hit,id);
+      vec3 normal=cap ? vec3(0,0,-sign(hit.z)) : pane ? -normalize(vec3(hit.xy,0)) : landNormal(hit,kind);
       if (windowOpening(hit) && abs(length(hit.xy)-uRadius)<0.001) {
+        // Beyond the panes, space is black except along routes to the Sun, which
+        // next-event estimation already samples. Reflections are chosen more often
+        // than their Fresnel probability; weights keep the estimate unbiased.
         vec2 glass=glassPlate(dot(normal,direction));
-        if (randomValue()<glass.x) {
+        const float REFLECTION_CHANCE=0.85;
+        if (randomValue()<REFLECTION_CHANCE) {
+          weight*=glass.x/REFLECTION_CHANCE;
           direction=reflect(direction,normal);p=hit+direction*(EPS*4.0);neeReachable=false;
         } else {
-          weight*=glass.y/max(1.0-glass.x,1e-8);
+          weight*=glass.y/(1.0-REFLECTION_CHANCE);
           p=hit+direction*(EPS*4.0);inside=false;mirrorBounces=0;
         }
       } else {
-        bool cap=abs(hit.z)>=uLength*0.5-0.001;
-        bool river=!cap && !windowAt(atan(hit.y,hit.x)) && riverDistance(groundCoordinates(hit))<0.035;
+        vec2 ground=groundCoordinates(hit);
+        bool river=!cap && !windowAt(atan(hit.y,hit.x)) && riverEdge(ground)<0.0;
+        connect=true;connectWeight=weight;connectPoint=hit+normal*(EPS*4.0);
+        p=connectPoint;lastVertex=connectPoint;singleAir=false;order++;
         if (river) {
           vec3 outgoing=-direction;
-          p=hit+normal*(EPS*4.0);
-          radiance+=weight*directLight(p,normal,outgoing,-2,1.0);
+          connectNormal=normal;connectOutgoing=outgoing;connectSpecies=-2;
           vec3 next=waterSample(normal,outgoing);
           vec2 water=waterReflection(normal,outgoing,next);
-          if(water.y<=0.0) break;
-          weight*=water.x/water.y;
+          alive=water.y>0.0;roulette=false;
+          weight*=water.x/max(water.y,1e-10);
           direction=next;lastPdf=water.y;neeReachable=true;
-          continue;
+        } else {
+          float albedo=materialSpectrum(materialAlbedo(hit,normal,kind,id));
+          vec3 shading=cap ? normal : shadingNormal(hit,normal,kind,id);
+          // Emission is a source term; it does not brighten unlit fields or endcaps.
+          if (!cap && !windowAt(atan(hit.y,hit.x)) && uSolarPower<0.02) radiance+=weight*settlementLamp(ground)*lampRadiance();
+          connectNormal=shading;connectAlbedo=albedo;
+          weight*=albedo;
+          direction=around(shading,sqrt(randomValue()),2.0*PI*randomValue());
+          // Shading-normal samples beneath the geometric surface are absorbed.
+          alive=dot(direction,normal)>0.0;
+          lastPdf=max(0.0,dot(shading,direction))/PI;neeReachable=true;
         }
-        float albedo=materialSpectrum(surfaceAlbedo(hit,normal));
-        // Emission is a source term; it does not brighten unlit fields or endcaps.
-        if (abs(hit.z)<uLength*0.5-0.001 && !windowAt(atan(hit.y,hit.x)) && uSolarPower<0.02) {
-          vec2 uv=groundCoordinates(hit);
-          float city=step(0.66,noise(uv*1.4+113.0))*(1.0-smoothstep(0.18,0.45,riverDistance(uv)));
-          float lamp=step(0.94,hash(floor(uv*80.0)));
-          radiance+=weight*city*lamp*lampRadiance();
-        }
-        p=hit+normal*(EPS*4.0);
-        radiance+=weight*directLight(p,normal,vec3(0),-1,albedo);
-        weight*=albedo;
-        direction=around(normal,sqrt(randomValue()),2.0*PI*randomValue());
-        lastPdf=max(0.0,dot(normal,direction))/PI;neeReachable=true;
       }
     }
-    if (depth>=3) {
+    if (connect) {
+      float light=connectWeight*directLight(connectPoint,connectNormal,connectOutgoing,connectSpecies,connectAlbedo,weighted);
+      if (weighted) radiance+=light;
+      else scattered+=light;
+    }
+    if (!alive) break;
+    if (order>=3 && roulette) {
       float survival=min(0.95,weight);
       if (randomValue()>=survival) break;
       weight/=survival;
     }
   }
-  return radiance;
+  return vec2(radiance+scattered,scattered+(haze ? radiance : 0.0));
 }

@@ -3,7 +3,7 @@ import { expect,test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
 test('GPU ratio tracking and collision survival agree with analytic Beer–Lambert slabs',async({page})=>{
-  const files=['common','surface','geometry','spectrum','transport'];
+  const files=['common','landscape','surface','geometry','spectrum','transport'];
   const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await page.goto('about:blank');
   const result=await page.evaluate(fragment=>{
@@ -69,7 +69,7 @@ test('GPU ratio tracking and collision survival agree with analytic Beer–Lambe
 });
 
 test('rough water conserves reflected energy and obeys reciprocity',async({page})=>{
-  const files=['common','surface','geometry','spectrum','transport'];
+  const files=['common','landscape','surface','geometry','spectrum','transport'];
   const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await openIsolatedPage(page);
   const result=await page.evaluate(async(source)=>{

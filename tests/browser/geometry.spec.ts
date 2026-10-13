@@ -3,7 +3,7 @@ import {expect,test} from '@playwright/test';
 import {readFile} from 'node:fs/promises';
 
 test('intersects exposed land-sector terrace faces with their angular normals',async({page})=>{
-  const source=(await Promise.all(['common','surface','geometry'].map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
+  const source=(await Promise.all(['common','landscape','surface','geometry'].map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await page.goto('about:blank');
   const result=await page.evaluate(source=>{
     const canvas=document.createElement('canvas');canvas.width=16;canvas.height=1;
@@ -54,7 +54,7 @@ test('intersects exposed land-sector terrace faces with their angular normals',a
 });
 
 test('keeps subpixel window rings in the pane domain and detects mixed edge coverage',async({page})=>{
-  const source=(await Promise.all(['common','surface','geometry','guides'].map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
+  const source=(await Promise.all(['common','landscape','surface','geometry','guides'].map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await openIsolatedPage(page);
   const result=await page.evaluate(async source=>{
     const module='/node_modules/three/build/three.module.js',THREE=await import(module);
@@ -79,4 +79,64 @@ test('keeps subpixel window rings in the pane domain and detects mixed edge cove
   expect(result.error).toBe(0);
   expect(result.ring[3]).toBe(3);
   expect(result.edge[3]).toBe(-1);
+});
+
+test('marches terrain, trees and houses without skipping geometry',async({page})=>{
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const threeModule='/node_modules/three/build/three.module.js',rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts';
+    const THREE=await import(threeModule),{HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule);
+    const source=(await Promise.all(['common','landscape','surface','geometry'].map(name=>fetch(`/src/render/shaders/${name}.glsl`).then(response=>response.text())))).join('\n');
+    const canvas=document.createElement('canvas');canvas.style.cssText='width:32px;height:32px';document.body.append(canvas);
+    // Constructing the renderer bakes the terrain and land-cover atlases.
+    const habitat=new HabitatRenderer(canvas,{...defaults,quality:'fast',clouds:false,paused:true});
+    habitat.resize(32,32,'fast');habitat.render();
+    const size=32;
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',uniforms:habitat.material.uniforms,
+      fragmentShader:source+`
+        out vec4 outColor;
+        float random(inout uint state) {state=state*747796405u+2891336453u;return float((state>>8u)&65535u)/65536.0;}
+        void main(){
+          uint state=uint(gl_FragCoord.x)*9781u+uint(gl_FragCoord.y)*6271u;
+          // Points 2–25 m above woodland, hedgerows or villages around the valley
+          // view, aimed nearly horizontally through the tree and roof layer.
+          float theta,z;
+          for(int i=0;i<16;i++){
+            theta=-PI*0.5+(random(state)-0.5)*0.9;z=-8.4+random(state)*4.0;
+            vec4 cover=coverAt(vec2(mod(theta-PI*0.5,2.0*PI)*uRadius,z));
+            if(cover.a+cover.b>0.0) break;
+          }
+          vec3 up=-vec3(cos(theta),sin(theta),0.0);
+          vec3 p=-up*uRadius+vec3(0,0,z);
+          p+=up*(terrainAt(p)+0.002+random(state)*0.023);
+          float elevation=mix(-0.35,0.15,random(state)),azimuth=random(state)*2.0*PI;
+          vec3 d=normalize(up*sin(elevation)+(vec3(up.y,-up.x,0.0)*cos(azimuth)+vec3(0,0,1)*sin(azimuth))*cos(elevation));
+          if (surfaceDistance(p)<0.0) {outColor=vec4(-1.0);return;}
+          float traced=traceInterior(p,d),brute=1e3;
+          for(int i=0;i<1500;i++){
+            float t=float(i)*0.0005;
+            if(t>min(traced+0.002,0.75)) break;
+            if(surfaceDistance(p+d*t)<0.0){brute=t;break;}
+          }
+          outColor=vec4(traced,brute,0.0,1.0);
+        }`});
+    const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    habitat.renderer.setRenderTarget(target);habitat.renderer.render(scene,new THREE.Camera());
+    const data=new Float32Array(size*size*4);habitat.renderer.readRenderTargetPixels(target,0,0,size,size,data);
+    let rays=0,missed=0;
+    for(let i=0;i<size*size;i++) {
+      if(data[i*4]<0) continue;
+      rays++;
+      // A brute-force hit more than 1 m before the marched one is skipped geometry.
+      if(data[i*4+1]<data[i*4]-0.001) missed++;
+    }
+    const error=habitat.renderer.getContext().getError();
+    material.dispose();plane.dispose();target.dispose();habitat.dispose();canvas.remove();
+    return {rays,missed,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.rays).toBeGreaterThan(600);
+  expect(result.missed).toBe(0);
 });

@@ -3,7 +3,7 @@ out vec4 outColor;
 void main() {
   wavelength=550.0;spectralBin=17.0;glassIndex=glassIndexAtWavelength();
   vec2 uv=gl_FragCoord.xy/uPreviewAtlasSize;
-  float theta=(uv.x*2.0-1.0)*PI;
+  float theta=uv.x*2.0*PI+PI*0.5;
   float height=windowAt(theta) ? 0.0 : texture(uTerrain,uv).r;
   vec3 point=vec3(vec2(cos(theta),sin(theta))*(uRadius-height),(uv.y-0.5)*uLength);
   vec3 normal=interiorNormal(point);

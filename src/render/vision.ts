@@ -26,7 +26,7 @@ export class VisualAdaptation {
   get luminance() { return this.adapted ?? 1000; }
   exposure(referenceIlluminance: number) {
     // The floor limits amplification in darkness. Zero radiance stays zero.
-    // 0.13 at the filmic curve input maps to approximately 18% display luminance.
-    return 0.13*referenceIlluminance/(this.luminance+0.01);
+    // 0.15 at the AgX curve input maps to approximately 18% display luminance.
+    return 0.15*referenceIlluminance/(this.luminance+0.01);
   }
 }

@@ -28,11 +28,15 @@ vec2 glassPlate(float cosine) {
     (1.0-f)*(1.0-f)*attenuation/denominator);
 }
 
+// Bound on the baked terrain slope |∇h|. A heightfield cannot rise toward a ray
+// faster than TERRAIN_SLOPE × horizontal travel − vertical climb.
+const float TERRAIN_SLOPE = 1.5;
+
 float traceInterior(vec3 p, vec3 d) {
   float boundary = boundaryDistance(p,d);
-  // The heightfield is bounded by 1.84 × relief. Cross the guaranteed empty
-  // interior analytically, retaining terrain intersections on both sides.
-  float innerRadius=max(0.0,uRadius-1.84*uTerrainHeight);
+  // The heightfield is bounded by 1.84 × relief, plus trees and roofs. Cross the
+  // guaranteed empty interior analytically, retaining hits on both sides.
+  float innerRadius=max(0.0,uRadius-1.84*uTerrainHeight-(uLandUse ? CANOPY_TOP : 0.0));
   float a=dot(d.xy,d.xy),b=dot(p.xy,d.xy);
   float discriminant=b*b-a*(dot(p.xy,p.xy)-innerRadius*innerRadius);
   float enter=1e20,leave=-1.0;
@@ -42,11 +46,20 @@ float traceInterior(vec3 p, vec3 d) {
   }
   float t = 0.0;
   float previous = 0.0;
-  for (int i=0;i<256;i++) {
+  for (int i=0;i<320;i++) {
     if (t>=enter && t<leave-EPS && t<boundary) {
       previous=t;t=min(leave,boundary);continue;
     }
-    float sdf = surfaceDistance(p+d*t);
+    vec3 q=p+d*t;
+    float radius=length(q.xy);
+    float phase=(atan(q.y,q.x)+PI*0.5)/SECTOR_ANGLE;
+    float landDistance=radius*sin(((1.0-uWindowFraction)*0.5-abs(fract(phase+0.5)-0.5))*SECTOR_ANGLE);
+    float above=uRadius-radius-terrainAt(q);
+    float wall=min(uRadius-radius,uLength*0.5-abs(q.z));
+    float kind;
+    vec2 id;
+    float object=objectDistance(q,above,kind,id);
+    float sdf=min(min(wall,max(above,-landDistance)),object);
     if (sdf<EPS || t>=boundary) {
       if (sdf<0.0) {
         float lo=previous,hi=t;
@@ -59,7 +72,19 @@ float traceInterior(vec3 p, vec3 d) {
       return min(t,boundary);
     }
     previous=t;
-    t+=max(EPS*0.5,min(sdf*0.35,uRadius/16.0));
+    float rise=-dot(d.xy,q.xy)/max(radius,1e-6);
+    float approach=max(TERRAIN_SLOPE*sqrt(max(0.0,1.0-rise*rise))-rise,0.1);
+    // The clipped terrain is an intersection: either bound separates it. The
+    // hull is analytic, so rays leaving through a window step straight to it.
+    float step=min(boundary-t,max(max(above,0.0)/approach,-landDistance));
+    if (uLandUse && above>CANOPY_TOP+0.01) {
+      // Trees and roofs lie within CANOPY_TOP of the terrain; empty occupancy
+      // blocks guarantee 30 m of clearance in every direction.
+      float canopy=(above-CANOPY_TOP)/approach;
+      if (canopy<step && above<0.25 && dot(textureLod(uLandCover,atlasCoordinates(q),4.0).ab,vec2(1))==0.0) canopy=max(canopy,0.027);
+      step=min(step,canopy);
+    } else step=min(step,object*0.85);
+    t+=max(EPS*0.5,min(step,uRadius/16.0));
   }
   // A grazing ray that exhausted the numerical budget must not leak sunlight.
   return min(t,boundary);
@@ -120,8 +145,40 @@ vec3 interiorNormal(vec3 p) {
   return surfaceNormal(p);
 }
 
-vec3 surfaceAlbedo(vec3 p, vec3 n) {
-  if (abs(p.z)>=uLength*0.5-0.001) return vec3(0.23,0.28,0.3);
+// Endcaps: concrete and steel structure with concentric service terraces,
+// radial ribs and panel-to-panel variation.
+vec3 endcapAlbedo(vec3 p) {
+  float radius=length(p.xy),angle=atan(p.y,p.x);
+  float terrace=fract(radius/0.25);
+  float rib=abs(fract(angle/(PI/12.0)+0.5)-0.5)*PI/12.0*radius;
+  vec2 panel=floor(vec2(radius/0.06,angle*radius/0.06));
+  vec3 color=vec3(0.23,0.28,0.3)*(0.85+0.3*hash(panel+vec2(p.z>0.0 ? 7.0 : 3.0,0.0)));
+  color=mix(color,vec3(0.12,0.13,0.13),1.0-smoothstep(0.0,0.06,terrace));
+  return mix(color,vec3(0.36,0.37,0.36),1.0-smoothstep(0.004,0.008,rib));
+}
+
+vec3 materialAlbedo(vec3 p, vec3 n, float kind, vec2 id) {
+  if (abs(p.z)>=uLength*0.5-0.001) return endcapAlbedo(p);
   if (windowAt(atan(p.y,p.x)) && abs(length(p.xy)-uRadius)<0.001) return vec3(0.38,0.43,0.46);
-  return groundAlbedo(p,n);
+  return kind>0.5 ? objectAlbedo(p,kind,id) : groundAlbedo(p,n);
+}
+vec3 surfaceAlbedo(vec3 p, vec3 n) {
+  vec2 id;
+  float kind=landKind(p,id);
+  return materialAlbedo(p,n,kind,id);
+}
+
+// Shading normal: smooth terrain slopes with metre-scale relief, and leaf
+// clumps on crowns. The geometric normal still offsets and bounds new rays.
+vec3 shadingNormal(vec3 p,vec3 geometric,float kind,vec2 id) {
+  if (abs(length(p.xy)-uRadius)<0.001) return geometric;
+  if (kind<0.5) {
+    // Exposed terrace faces keep their angular normals.
+    if (abs(dot(geometric.xy,normalize(p.xy)))<0.7) return geometric;
+    return terrainShadingNormal(p);
+  }
+  if (kind>1.5) return geometric;
+  vec2 g=groundCoordinates(p)*1300.0;
+  vec3 clumps=vec3(noise(g),noise(g+31.0),noise(g+57.0))-0.5;
+  return normalize(geometric+clumps*0.9);
 }

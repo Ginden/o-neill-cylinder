@@ -76,35 +76,52 @@ test('denoises the static display without changing camera history or light-meter
   expect(result.retainedMeter).toBe(result.measured);
 });
 
-for(const coldPixel of [false,true]) test(coldPixel ? 'fills a zero-contribution pixel using neighboring path uncertainty' : 'does not imprint material colors on uniform atmospheric radiance',async({page})=>{
+type FilterCase='haze'|'texture'|'cold';
+const filterCases:[FilterCase,string][]=[
+  ['haze','does not imprint material colors on uniform atmospheric radiance'],
+  ['texture','keeps surface texture under uniform illumination'],
+  ['cold','fills a zero-contribution pixel using neighboring path uncertainty']
+];
+for(const [kind,title] of filterCases) test(title,async({page})=>{
   await openIsolatedPage(page);
-  const result=await page.evaluate(async(coldPixel)=>{
-    const threeModule='/node_modules/three/build/three.module.js',filterModule='/src/render/postprocess.ts';
-    const THREE=await import(threeModule),{DisplayDenoiser}=await import(filterModule);
-    const size=16,expected=[0.025,0.03,0.055],image=new Float32Array(size*size*4),geometry=new Float32Array(image.length),albedo=new Float32Array(image.length);
+  const result=await page.evaluate(async(kind)=>{
+    const threeModule='/node_modules/three/build/three.module.js',filterModule='/src/render/postprocess.ts',colorModule='/src/render/color.ts';
+    const THREE=await import(threeModule),{DisplayDenoiser}=await import(filterModule),{MATERIAL_XYZ}=await import(colorModule);
+    const size=16,haze=[0.025,0.03,0.055],illumination=0.08,samples=64;
+    const total=new Float32Array(size*size*4),scattered=new Float32Array(total.length),geometry=new Float32Array(total.length),albedo=new Float32Array(total.length);
+    const expected:number[][]=[];
     for(let i=0;i<size*size;i++) {
-      image.set([...expected,0.005],i*4);geometry.set([0,0,1,8],i*4);
-      // A uniform foreground medium crosses contrasting fields and a mixed pixel.
-      const color=i%size<8 ? [0.08,0.4,0.03] : [0.5,0.1,0.06];
-      albedo.set([...color,i%size===8 ? -1 : 0],i*4);
+      geometry.set([0,0,1,8],i*4);
+      // A uniform foreground crosses contrasting fields and a mixed pixel.
+      const anchors=i%size===8 ? [0.29,0.25,0.045] : i%size<8 ? [0.08,0.4,0.03] : [0.5,0.1,0.06];
+      albedo.set([...anchors,i%size===8 ? -1 : 0],i*4);
+      const reflected=new THREE.Vector3(...anchors).applyMatrix3(MATERIAL_XYZ).multiplyScalar(illumination).toArray();
+      const surface=kind==='texture' ? reflected : [0,0,0],light=kind==='texture' ? [0,0,0] : haze;
+      const color=surface.map((value:number,c:number)=>value+light[c]);
+      // Second moments include sampling variance around each mean. An all-zero
+      // pixel after 64 samples implies rare, heavy-tailed path contributions.
+      const variance=kind==='cold' ? 0.03 : 0.002;
+      total.set([...color,surface[1]**2+variance],i*4);scattered.set([...light,light[1]**2+variance],i*4);
+      expected.push(color);
     }
-    if(coldPixel) image.fill(0,(size*8+8)*4,(size*8+8)*4+4);
-    const textures=[image,geometry,albedo].map(data=>{
+    if(kind==='cold') {total.fill(0,(size*8+4)*4,(size*8+4)*4+4);scattered.fill(0,(size*8+4)*4,(size*8+4)*4+4);}
+    const textures=[total,scattered,geometry,albedo].map(data=>{
       const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.FloatType);texture.needsUpdate=true;return texture;
     });
     const renderer=new THREE.WebGLRenderer(),plane=new THREE.PlaneGeometry(2,2),filter=new DisplayDenoiser(plane);filter.resize(size,size);
-    const output=filter.filter(renderer,textures[0],{textures:textures.slice(1)},64);
+    const output=filter.filter(renderer,{textures:textures.slice(0,2)},{textures:textures.slice(2)},samples);
     const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
     const material=new THREE.ShaderMaterial({uniforms:{image:{value:output}},depthTest:false,depthWrite:false,
       vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0,1);}',
       fragmentShader:'uniform sampler2D image;varying vec2 vUv;void main(){gl_FragColor=texture2D(image,vUv);}'});
     const scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
-    const pixels=new Float32Array(image.length);renderer.readRenderTargetPixels(target,0,0,size,size,pixels);
+    const pixels=new Float32Array(total.length);renderer.readRenderTargetPixels(target,0,0,size,size,pixels);
     let maximumError=0;
-    for(let i=0;i<size*size;i++) for(let channel=0;channel<3;channel++) maximumError=Math.max(maximumError,Math.abs(pixels[i*4+channel]-expected[channel]));
+    for(let i=0;i<size*size;i++) for(let channel=0;channel<3;channel++) maximumError=Math.max(maximumError,Math.abs(pixels[i*4+channel]-expected[i][channel])/expected[i][channel]);
     const error=renderer.getContext().getError();filter.dispose();plane.dispose();target.dispose();material.dispose();textures.forEach(texture=>texture.dispose());renderer.dispose();
     return {maximumError,error};
-  },coldPixel);
+  },kind);
+  await test.info().attach('filter-error',{body:JSON.stringify(result),contentType:'application/json'});
   expect(result.error).toBe(0);
-  expect(result.maximumError).toBeLessThan(coldPixel ? 0.004 : 1e-6);
+  expect(result.maximumError).toBeLessThan(kind==='cold' ? 0.15 : 1e-5);
 });

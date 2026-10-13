@@ -45,9 +45,9 @@ test('renders a varied landscape without shader errors and exposes physical comp
   const air = await pixels(page);
   expect(air.min).toBeLessThan(240);
   await page.locator('#atmosphere').uncheck();
-  await settleRender(page);
+  // A pending GPU pass keeps the previous frame on screen until it completes.
+  await expect.poll(async () => (await pixels(page)).min, { timeout: 20000 }).toBeGreaterThan(253);
   const vacuum = await pixels(page);
-  expect(vacuum.min).toBeGreaterThan(253);
   expect(vacuum.mean).toBeGreaterThan(air.mean+3);
   await page.locator('#atmosphere').check();
   await page.locator('#diagnostic').selectOption('natural');

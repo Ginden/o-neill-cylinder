@@ -9,13 +9,12 @@ void main() {
   if(uSurfaceKind==0 && windowOpening(p)) discard;
   vec3 normal=uSurfaceKind==1 ? vec3(0,0,-sign(p.z)) : -normalize(vec3(p.xy,0));
   vec3 albedo=uSurfaceKind==1 ? vec3(0.23,0.28,0.3) : windowAt(atan(p.y,p.x)) ? vec3(0.38,0.43,0.46) : groundAlbedo(p,normal);
-  vec2 uv=vec2((atan(p.y,p.x)+PI)/(2.0*PI),p.z/uLength+0.5);
+  // The raster mesh has no trees; tree cover stands in for their crowns.
+  if(uSurfaceKind==0) albedo=mix(albedo,vec3(0.035,0.08,0.028),0.9*coverAt(groundCoordinates(p)).r);
+  vec2 uv=atlasCoordinates(p);
   vec3 color=uSurfaceKind==1 ? vec3(0.0) : (uMaterialXYZ*albedo)*texture(uPreviewLight,uv).rgb/PI;
   if(uSolarPower<0.02 && uSurfaceKind==0 && !windowAt(atan(p.y,p.x))) {
-    vec2 ground=groundCoordinates(p);
-    float city=step(0.66,noise(ground*1.4+113.0))*(1.0-smoothstep(0.18,0.45,riverDistance(ground)));
-    float lamp=step(0.94,hash(floor(ground*80.0)));
-    color+=city*lamp*uLampXYZ/uReferenceIlluminance;
+    color+=settlementLamp(groundCoordinates(p))*uLampXYZ/uReferenceIlluminance;
   }
   outColor=vec4(encodeSRGB(displayColor(color)),1.0);
 }

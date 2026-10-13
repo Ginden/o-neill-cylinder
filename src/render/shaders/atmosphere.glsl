@@ -5,7 +5,11 @@ uniform vec2 uResolution;
 uniform int uSteps;
 uniform int uDiagnostic;
 uniform sampler2D uPrevious;
-out vec4 outColor;
+uniform sampler2D uPreviousHaze;
+// Total XYZ with the surface part's luminance second moment, and the haze part
+// (first event in the medium) with its own second moment.
+layout(location=0) out vec4 outColor;
+layout(location=1) out vec4 outHaze;
 
 void main() {
   uvec2 pixel=uvec2(gl_FragCoord.xy);
@@ -22,9 +26,14 @@ void main() {
   vec2 ndc=(gl_FragCoord.xy+jitter)/uResolution*2.0-1.0;
   vec4 view=uInverseProjection*vec4(ndc,1.0,1.0);
   vec3 ray=normalize((uCameraMatrix*vec4(normalize(view.xyz/view.w),0.0)).xyz);
-  vec3 color;
-  if (uDiagnostic==0) color=matchingXYZ()*pathRadiance(uCameraPosition,ray)*(400.0*683.0/uReferenceIlluminance);
-  else {
+  vec3 color,haze=vec3(0.0);
+  if (uDiagnostic==0) {
+    vec3 xyz=matchingXYZ()*(400.0*683.0/uReferenceIlluminance);
+    vec2 radiance=pathRadiance(uCameraPosition,ray);
+    color=xyz*radiance.x;haze=xyz*radiance.y;
+    // A numerical failure in one sample must not poison the whole history.
+    if (any(isnan(color)) || any(isinf(color))) {color=vec3(0.0);haze=vec3(0.0);}
+  } else {
     float distance=traceInterior(uCameraPosition,ray);
     vec3 opticalDepth=vec3(0.0);
     float densityIntegral=0.0,liquidIntegral=0.0;
@@ -46,11 +55,15 @@ void main() {
     if (uDiagnostic==2) color=mix(vec3(0.02,0.08,0.18),vec3(0.98,0.7,0.19),1.0-exp(-densityIntegral/8.0));
     if (uDiagnostic==3) color=mix(vec3(0.015,0.025,0.04),vec3(0.48,0.87,0.83),1.0-exp(-liquidIntegral*2.0));
   }
-  float secondMoment=dot(color,color)/3.0;
+  vec2 moments=vec2(color.y-haze.y,haze.y);
+  moments*=moments;
   if (uSample>0 && uDiagnostic==0) {
-    vec4 previous=texelFetch(uPrevious,ivec2(gl_FragCoord.xy),0);
-    secondMoment=previous.a+(secondMoment-previous.a)/float(uSample+1);
-    color=previous.rgb+(color-previous.rgb)/float(uSample+1);
+    vec4 previous=texelFetch(uPrevious,ivec2(gl_FragCoord.xy),0),previousHaze=texelFetch(uPreviousHaze,ivec2(gl_FragCoord.xy),0);
+    float count=float(uSample+1);
+    color=previous.rgb+(color-previous.rgb)/count;
+    haze=previousHaze.rgb+(haze-previousHaze.rgb)/count;
+    moments=vec2(previous.a,previousHaze.a)+(moments-vec2(previous.a,previousHaze.a))/count;
   }
-  outColor=vec4(color,secondMoment);
+  outColor=vec4(color,moments.x);
+  outHaze=vec4(haze,moments.y);
 }
