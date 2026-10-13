@@ -53,6 +53,10 @@ test('updates the habitat, evolves weather, and round-trips an exported experime
   await page.getByRole('tab',{ name:'weather',exact:true }).click();
   await expect(page.locator('#cloud-fraction')).not.toHaveText('—');
   await expect(page.locator('#sim-time')).not.toHaveText('00:00:00');
+  const weatherTime = await page.locator('#sim-time').textContent();
+  await expect(page.locator('#render-state')).toContainText('live weather');
+  await expect.poll(async () => Number(await page.locator('#scene').getAttribute('data-samples')), { timeout: 20000 }).toBeGreaterThan(8);
+  await expect(page.locator('#sim-time')).not.toHaveText(weatherTime!);
   await page.getByRole('button',{ name:'Pause weather',exact:true }).click();
   await settleRender(page);
   await page.screenshot({ path:'test-results/humid-afternoon.png' });

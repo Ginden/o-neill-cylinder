@@ -73,11 +73,12 @@ test('denoises the static display without changing camera history or light-meter
   expect(result.retainedMeter).toBe(result.measured);
 });
 
-type FilterCase='haze'|'texture'|'cold';
+type FilterCase='haze'|'texture'|'cold'|'cloud';
 const filterCases:[FilterCase,string][]=[
   ['haze','does not imprint material colors on uniform atmospheric radiance'],
   ['texture','keeps surface texture under uniform illumination'],
-  ['cold','fills a zero-contribution pixel using neighboring path uncertainty']
+  ['cold','fills a zero-contribution pixel using neighboring path uncertainty'],
+  ['cloud','removes isolated crown color speckles under clouds while preserving pane color']
 ];
 for(const [kind,title] of filterCases) test(title,async({page})=>{
   await openIsolatedPage(page);
@@ -91,22 +92,27 @@ for(const [kind,title] of filterCases) test(title,async({page})=>{
       geometry.set([0,0,1,8],i*4);
       // A uniform foreground crosses contrasting fields and a mixed pixel.
       const anchors=i%size===8 ? [0.29,0.25,0.045] : i%size<8 ? [0.08,0.4,0.03] : [0.5,0.1,0.06];
-      albedo.set([...anchors,i%size===8 ? -1 : 0],i*4);
+      const crown=kind==='cloud' && i===size*8+4,pane=kind==='cloud' && i%size<2;
+      albedo.set([...anchors,crown ? 4 : pane ? 3 : kind!=='cloud' && i%size===8 ? -1 : 0],i*4);
       const reflected=new THREE.Vector3(...anchors).applyMatrix3(MATERIAL_XYZ).multiplyScalar(illumination).toArray();
-      const surface=kind==='texture' ? reflected : [0,0,0],light=kind==='texture' ? [0,0,0] : haze;
+      const surface=kind==='texture' || kind==='cloud' ? reflected : [0,0,0],light=kind==='texture' || kind==='cloud' ? [0,0,0] : haze;
+      if(pane) surface.splice(0,3,0.002,0.04,0.1);
       const color=surface.map((value:number,c:number)=>value+light[c]);
       // Second moments include sampling variance around each mean. An all-zero
       // pixel after 64 samples implies rare, heavy-tailed path contributions.
       const variance=kind==='cold' ? 0.03 : 0.002;
       total.set([...color,surface[1]**2+variance],i*4);scattered.set([...light,light[1]**2+variance],i*4);
       expected.push(color);
+      // A rare spectral path in an isolated crown must borrow illumination
+      // color from surrounding diffuse land, without mixing specular panes.
+      if(crown) {total[i*4]*=5;total[i*4+2]*=0.1;}
     }
     if(kind==='cold') {total.fill(0,(size*8+4)*4,(size*8+4)*4+4);scattered.fill(0,(size*8+4)*4,(size*8+4)*4+4);}
     const textures=[total,scattered,geometry,albedo].map(data=>{
       const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.FloatType);texture.needsUpdate=true;return texture;
     });
     const renderer=new THREE.WebGLRenderer(),plane=new THREE.PlaneGeometry(2,2),filter=new DisplayDenoiser(plane);filter.resize(size,size);
-    const output=filter.filter(renderer,{textures:textures.slice(0,2)},{textures:textures.slice(2)},samples);
+    const output=filter.filter(renderer,{textures:textures.slice(0,2)},{textures:textures.slice(2)},samples,kind==='cloud');
     const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
     const material=new THREE.ShaderMaterial({uniforms:{image:{value:output}},depthTest:false,depthWrite:false,
       vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0,1);}',
@@ -120,5 +126,5 @@ for(const [kind,title] of filterCases) test(title,async({page})=>{
   },kind);
   await test.info().attach('filter-error',{body:JSON.stringify(result),contentType:'application/json'});
   expect(result.error).toBe(0);
-  expect(result.maximumError).toBeLessThan(kind==='cold' ? 0.15 : 1e-5);
+  expect(result.maximumError,JSON.stringify(result)).toBeLessThan(kind==='cold' ? 0.15 : kind==='cloud' ? 0.05 : 1e-5);
 });

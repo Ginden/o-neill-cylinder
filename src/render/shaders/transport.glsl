@@ -385,7 +385,9 @@ vec2 pathRadiance(vec3 p,vec3 direction) {
       else scattered+=light;
     }
     if (!alive) break;
-    if (order>=3 && roulette) {
+    // Direct lighting is already estimated above. Terminate weak continuation
+    // paths from the first event; surviving paths retain their expected energy.
+    if (order>=1 && roulette) {
       float survival=min(0.95,weight);
       if (randomValue()>=survival) break;
       weight/=survival;

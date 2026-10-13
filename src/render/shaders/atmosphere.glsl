@@ -6,6 +6,7 @@ uniform int uSteps;
 uniform int uDiagnostic;
 uniform sampler2D uPrevious;
 uniform sampler2D uPreviousHaze;
+uniform int uHistory;
 // Total XYZ with the surface part's luminance second moment, and the haze part
 // (first event in the medium) with its own second moment.
 layout(location=0) out vec4 outColor;
@@ -57,9 +58,9 @@ void main() {
   }
   vec2 moments=vec2(color.y-haze.y,haze.y);
   moments*=moments;
-  if (uSample>0 && uDiagnostic==0) {
+  if (uHistory>0 && uDiagnostic==0) {
     vec4 previous=texelFetch(uPrevious,ivec2(gl_FragCoord.xy),0),previousHaze=texelFetch(uPreviousHaze,ivec2(gl_FragCoord.xy),0);
-    float count=float(uSample+1);
+    float count=float(uHistory+1);
     color=previous.rgb+(color-previous.rgb)/count;
     haze=previousHaze.rgb+(haze-previousHaze.rgb)/count;
     moments=vec2(previous.a,previousHaze.a)+(moments-vec2(previous.a,previousHaze.a))/count;

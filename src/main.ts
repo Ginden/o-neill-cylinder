@@ -200,7 +200,7 @@ function start() {
     element('cloud-mass').textContent = `${(renderer.stats.weather.cloudMass/1e6).toFixed(1)} kt`;
     element<HTMLButtonElement>('snapshot').disabled = !renderer.stats.raySize;
     if (renderer.stats.raySize) element('render-state').textContent=settings.diagnostic==='natural' && renderer.stats.mode==='path'
-      ? `Path tracing · ${renderer.stats.samples} samples · ${renderer.stats.sampleRate.toFixed(1)} samples/s`
+      ? `Path tracing · ${settings.clouds && !settings.paused && settings.pressure>0 ? 'live weather' : `${renderer.stats.samples} samples`} · ${renderer.stats.sampleRate.toFixed(1)} samples/s`
       : `${renderer.stats.mode==='preview' ? 'Navigation preview' : 'Diagnostic view'} · ${Math.round(renderer.stats.fps)} fps`;
   }
 

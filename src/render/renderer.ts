@@ -60,6 +60,9 @@ export class HabitatRenderer {
   private meterBusy=false;
   private meterValue:number|null=null;
   private revision=0;
+  private weatherRevision=-1;
+  private liveWeather=false;
+  private cloudMass=0;
   mode:'preview'|'path'='preview';
   samples=0;
   raySize='';
@@ -101,7 +104,7 @@ export class HabitatRenderer {
         uWeather: { value: this.weather }, uInverseProjection: { value: this.camera.projectionMatrixInverse },
         uCameraMatrix: { value: this.camera.matrixWorld }, uCameraPosition: { value: this.camera.position },
         uResolution: { value: new THREE.Vector2(1, 1) }, uSteps: { value: 56 },
-        uDiagnostic: { value: 0 }, uSample:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]}
+        uDiagnostic: { value: 0 }, uSample:{value:0},uHistory:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
@@ -133,6 +136,7 @@ export class HabitatRenderer {
   }
 
   setWeather(snapshot: WeatherSnapshot) {
+    this.cloudMass=snapshot.stats.cloudMass;
     const [x,y,z] = snapshot.dimensions;
     if (this.weather.image.width !== x) {
       this.weather.dispose();
@@ -144,7 +148,8 @@ export class HabitatRenderer {
       this.weather.needsUpdate = true;
     }
     this.updateCloudBounds();
-    if (this.material.uniforms.uClouds.value) this.resetAccumulation();
+    if (this.material.uniforms.uClouds.value && (!this.liveWeather || snapshot.revision!==this.weatherRevision)) this.resetAccumulation();
+    this.weatherRevision=snapshot.revision;
   }
 
   private updateCloudBounds() {
@@ -158,6 +163,12 @@ export class HabitatRenderer {
 
   apply(s: Settings, preparedPopulations?: Populations) {
     const u = this.material.uniforms;
+    const liveWeather=s.clouds && !s.paused && s.pressure>0;
+    // A paused image must converge to the final field, without moving-weather
+    // history. Ordinary live snapshots retain history instead of restarting it.
+    if (this.liveWeather && !liveWeather) this.resetAccumulation();
+    else if (!this.liveWeather && liveWeather) this.band=0; // Reweight every band consistently on resume.
+    this.liveWeather=liveWeather;
     const particleState=JSON.stringify([s.aerosolRadius,s.cloudRadius]);
     if (particleState!==this.particleState) {
       const populations=preparedPopulations ?? [particleOptics(s.aerosolRadius,0.35,[1.5,0.01]),particleOptics(s.cloudRadius,0.35,[1.333,1e-9])];
@@ -268,6 +279,10 @@ export class HabitatRenderer {
       this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
     }
     this.material.uniforms.uSample.value=this.samples;
+    // Keep the spectral sequence advancing after the temporal weight saturates.
+    // A 1/32 update weight smooths live weather; static scenes use the exact mean.
+    const history=this.liveWeather ? Math.min(this.samples,31) : this.samples;
+    this.material.uniforms.uHistory.value=history;
     this.material.uniforms.uPrevious.value=previous.textures[0];
     this.material.uniforms.uPreviousHaze.value=previous.textures[1];
     this.renderer.setRenderTarget(target);
@@ -279,7 +294,7 @@ export class HabitatRenderer {
     }
     this.band=0;this.targetIndex=1-this.targetIndex;this.guidesDirty=false;
     this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
-      ? this.denoiser.filter(this.renderer,target,this.guideTarget,this.samples+1) : target.textures[0];
+      ? this.denoiser.filter(this.renderer,target,this.guideTarget,history+1,this.material.uniforms.uClouds.value && this.cloudMass>0) : target.textures[0];
     if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
       this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);

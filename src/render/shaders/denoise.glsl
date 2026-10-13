@@ -12,6 +12,7 @@ uniform vec2 uSize;
 uniform float uStride;
 uniform float uSamples;
 uniform int uMode; // 0: prepare from accumulation, 1: filter step, 2: compose
+uniform bool uCloudy;
 layout(location=0) out vec4 outSurface;
 layout(location=1) out vec4 outHaze;
 
@@ -79,7 +80,13 @@ void main() {
     float hazeWeight=hazeGeometry*exp(-abs(otherHaze.y-haze.y)/sigma.y);
     surfaceSum+=vec4(surfaceWeight*otherSurface.rgb,surfaceWeight*surfaceWeight*otherSurface.a);
     hazeSum+=vec4(hazeWeight*otherHaze.rgb,hazeWeight*hazeWeight*otherHaze.a);
-    surfaceWide+=vec4(otherSurface.rgb,1.0)*surfaceGeometry;
+    // Cloud-lit diffuse materials share a slowly varying illumination color
+    // after demodulation. Pool that color across trees/fields/roofs; isolated
+    // crown pixels otherwise retain single-wavelength speckles indefinitely.
+    // Luminance still respects normals and material edges, as do glass/water.
+    bool diffuse=(domain.a>=0.0 && (domain.a<2.0 || domain.a>3.5)) && (otherDomain.a>=0.0 && (otherDomain.a<2.0 || otherDomain.a>3.5));
+    float colorGeometry=uCloudy && diffuse ? hazeGeometry : surfaceGeometry;
+    surfaceWide+=vec4(otherSurface.rgb,1.0)*colorGeometry;
     hazeWide+=vec4(otherHaze.rgb,1.0)*hazeGeometry;
     total+=vec2(surfaceWeight,hazeWeight);
   }

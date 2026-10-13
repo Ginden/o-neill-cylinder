@@ -117,3 +117,70 @@ test('splitting GPU work preserves complete samples and abandons interrupted sam
   expect(result.maximumDifference).toBeLessThan(1e-6);
   expect(result.error).toBe(0);
 });
+
+test('live cloud updates retain spectral history and pausing converges the frozen field', async ({ page }) => {
+  await openIsolatedPage(page);
+  const errors = captureErrors(page);
+  const result = await page.evaluate(async () => {
+    const rendererModule = '/src/render/renderer.ts', settingsModule = '/src/settings.ts', navigationModule = '/src/render/navigation.ts', weatherModule = '/src/weather/solver.ts';
+    const { HabitatRenderer } = await import(rendererModule), { defaults } = await import(settingsModule);
+    const { Navigation } = await import(navigationModule), { WeatherSolver } = await import(weatherModule);
+    const settings = { ...defaults, quality: 'fast', clouds: true, humidity: 65, paused: true, adaptiveExposure: false };
+    const canvas = document.createElement('canvas'); document.body.append(canvas);
+    const renderer = new HabitatRenderer(canvas, settings);
+    new Navigation(renderer.camera, canvas, settings);
+    renderer.resize(32, 32, 'fast', 1);
+    const snapshot = { ...new WeatherSolver(settings).snapshot(), revision: 1 };
+    renderer.setWeather(snapshot);
+    const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const sample = async () => {
+      while (true) {
+        const complete = renderer.render();
+        await frame();
+        if (complete && renderer.mode === 'path') break;
+      }
+      const target = renderer.targets[renderer.targetIndex];
+      const pixels = new Float32Array(target.width * target.height * 4);
+      renderer.renderer.readRenderTargetPixels(target, 0, 0, target.width, target.height, pixels);
+      return pixels;
+    };
+    // Recover each independent spectral sample from the static running means.
+    // Then compare live GPU output to a CPU temporal average over those same rays.
+    const means: Float32Array[] = [];
+    for (let n = 0; n < 64; n++) means.push(await sample());
+    renderer.apply({ ...settings, paused: false });
+    renderer.resize(32, 32, 'fast', 1);
+    const expected = new Float64Array(means[0].length);
+    let difference = 0, scale = 0;
+    for (let n = 0; n < means.length; n++) {
+      renderer.setWeather(snapshot);
+      const actual = await sample();
+      for (let i = 0; i < actual.length; i++) {
+        const independent = (n + 1) * means[n][i] - n * (means[n - 1]?.[i] ?? 0);
+        expected[i] += (independent - expected[i]) / Math.min(n + 1, 32);
+        difference = Math.max(difference, Math.abs(actual[i] - expected[i]));
+        scale = Math.max(scale, Math.abs(expected[i]));
+      }
+    }
+    const liveSamples = renderer.samples;
+    renderer.apply(settings);
+    let paused = new Float32Array(0);
+    for (let n = 0; n < 4; n++) paused = await sample();
+    let pausedDifference = 0;
+    for (let i = 0; i < paused.length; i++) pausedDifference = Math.max(pausedDifference, Math.abs(paused[i] - means[3][i]));
+    const pausedSamples = renderer.samples;
+    renderer.apply({ ...settings, paused: false });
+    renderer.setWeather({ ...snapshot, revision: 2 });
+    const resetSamples = renderer.samples;
+    const error = renderer.renderer.getContext().getError();
+    renderer.dispose(); canvas.remove();
+    return { liveSamples, relativeDifference: difference / scale, pausedSamples, pausedDifference, resetSamples, error };
+  });
+  expect(errors).toEqual([]);
+  expect(result.liveSamples).toBe(64);
+  expect(result.relativeDifference).toBeLessThan(1e-5);
+  expect(result.pausedSamples).toBe(4);
+  expect(result.pausedDifference).toBeLessThan(1e-6);
+  expect(result.resetSamples).toBe(0);
+  expect(result.error).toBe(0);
+});
