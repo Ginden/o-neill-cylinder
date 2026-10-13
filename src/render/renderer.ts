@@ -46,7 +46,7 @@ export class HabitatRenderer {
   private terrainState='';
   private readonly preview:NavigationPreview;
   private readonly denoiser:DisplayDenoiser;
-  private readonly guideTarget=new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false});
+  private readonly guideTarget=new THREE.WebGLRenderTarget(1,1,{count:3,type:THREE.FloatType,depthBuffer:false});
   private readonly guideScene=new THREE.Scene();
   private readonly guideMaterial:THREE.ShaderMaterial;
   private guidesDirty=true;
@@ -63,6 +63,7 @@ export class HabitatRenderer {
   private weatherRevision=-1;
   private liveWeather=false;
   private cloudMass=0;
+  private historySamples=0;
   mode:'preview'|'path'='preview';
   samples=0;
   raySize='';
@@ -148,7 +149,8 @@ export class HabitatRenderer {
       this.weather.needsUpdate = true;
     }
     this.updateCloudBounds();
-    if (this.material.uniforms.uClouds.value && (!this.liveWeather || snapshot.revision!==this.weatherRevision)) this.resetAccumulation();
+    this.guidesDirty=true;
+    if (this.material.uniforms.uClouds.value && snapshot.revision!==this.weatherRevision) this.resetAccumulation();
     this.weatherRevision=snapshot.revision;
   }
 
@@ -164,10 +166,9 @@ export class HabitatRenderer {
   apply(s: Settings, preparedPopulations?: Populations) {
     const u = this.material.uniforms;
     const liveWeather=s.clouds && !s.paused && s.pressure>0;
-    // A paused image must converge to the final field, without moving-weather
-    // history. Ordinary live snapshots retain history instead of restarting it.
-    if (this.liveWeather && !liveWeather) this.resetAccumulation();
-    else if (!this.liveWeather && liveWeather) this.band=0; // Reweight every band consistently on resume.
+    // Retain the live estimate as a bounded warm start when pausing. Its weight
+    // decays as the frozen field converges; the spectral sequence never rewinds.
+    if (this.liveWeather!==liveWeather) this.band=0;
     this.liveWeather=liveWeather;
     const particleState=JSON.stringify([s.aerosolRadius,s.cloudRadius]);
     if (particleState!==this.particleState) {
@@ -194,6 +195,7 @@ export class HabitatRenderer {
       uAtmosphere: s.atmosphere, uClouds: s.clouds
     };
     for (const [name, value] of Object.entries(scalar)) u[name].value = value;
+    this.updateBands(this.targets[0].width,this.targets[0].height);
     u.uSun.value.set(...sunDirection(s));
     const panels=mirrorGeometry(s);
     panels.forEach((panel,i)=>{
@@ -221,7 +223,14 @@ export class HabitatRenderer {
     if (physicalState!==this.physicalState) {this.resetAccumulation();this.physicalState=physicalState;}
   }
 
-  private resetAccumulation() {this.samples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
+  private resetAccumulation() {this.samples=0;this.historySamples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
+
+  private updateBands(width:number,height:number) {
+    // Cloud walks can take hundreds of events. Smaller submissions preserve
+    // navigation responsiveness without truncating those paths or reducing resolution.
+    const bands=Math.ceil(width*height/(this.material.uniforms.uClouds.value ? 32768 : 196608));
+    if (bands!==this.bands) {this.bands=bands;this.band=0;}
+  }
 
   resize(width: number, height: number, quality: Settings['quality'], pixelRatio=globalThis.devicePixelRatio ?? 1) {
     const scale = { fast: 0.5, balanced: 1, high: 1 }[quality];
@@ -234,7 +243,7 @@ export class HabitatRenderer {
     const budget={fast:196608,balanced:1048576,high:4194304}[quality];
     const reduction=Math.min(1,Math.sqrt(budget/(size.x*size.y*scale*scale)));
     const x=Math.max(16,Math.floor(size.x*scale*reduction)),y=Math.max(16,Math.floor(size.y*scale*reduction));
-    this.bands=Math.ceil(x*y/196608);
+    this.updateBands(x,y);
     this.material.uniforms.uResolution.value.set(x,y);
     for (const target of this.targets) target.setSize(x,y);
     this.guideTarget.setSize(x,y);this.denoiser.resize(x,y);
@@ -281,7 +290,7 @@ export class HabitatRenderer {
     this.material.uniforms.uSample.value=this.samples;
     // Keep the spectral sequence advancing after the temporal weight saturates.
     // A 1/32 update weight smooths live weather; static scenes use the exact mean.
-    const history=this.liveWeather ? Math.min(this.samples,31) : this.samples;
+    const history=this.liveWeather ? Math.min(this.historySamples,31) : this.historySamples;
     this.material.uniforms.uHistory.value=history;
     this.material.uniforms.uPrevious.value=previous.textures[0];
     this.material.uniforms.uPreviousHaze.value=previous.textures[1];
@@ -298,6 +307,7 @@ export class HabitatRenderer {
     if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
       this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);
+    this.historySamples=history+1;
     this.samples++;
     this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
     return true;

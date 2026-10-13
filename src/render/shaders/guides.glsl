@@ -4,6 +4,25 @@ uniform vec3 uCameraPosition;
 uniform vec2 uResolution;
 layout(location=0) out vec4 outGeometry;
 layout(location=1) out vec4 outAlbedo;
+layout(location=2) out vec4 outMedium;
+
+// Expected distance to the first cloud collision (or the surface if the ray
+// survives). Opaque foreground fog must not inherit invisible roof/pane edges.
+float cloudDepth(vec3 ray,float distance) {
+  if (!uAtmosphere || !uClouds || uPressure<=0.0) return distance;
+  float extinction=texelFetch(uCloudPhase,ivec2(0,17),0).b;
+  float stepSize=distance/64.0,transmission=1.0,depth=0.0;
+  for (int i=0;i<64;i++) {
+    float start=float(i)*stepSize;
+    float beta=weatherAt(uCameraPosition+ray*(start+stepSize*0.5)).r*extinction;
+    float tau=beta*stepSize,segment=exp(-tau);
+    float offset=tau<0.01 ? stepSize*0.5 : 1.0/beta-stepSize*segment/(1.0-segment);
+    depth+=transmission*(1.0-segment)*(start+offset);
+    transmission*=segment;
+    if (transmission<1e-5) break;
+  }
+  return depth+transmission*distance;
+}
 // Filtering domains: 0 terrain, 1 endcap, 2 water, 3 pane or frame, 4 tree, 5 building.
 // A subpixel frame shares the pane's filtering domain. Tagging only openings
 // made isolated ring pixels diffuse, demodulating volume light as roof color.
@@ -32,6 +51,7 @@ void main() {
     vec3 hitNormal=interiorNormal(hit);
     if (i==0) {
       kind=hitKind;normal=hitNormal;depth=length(hit-uCameraPosition);
+      outMedium=vec4(cloudDepth(ray,depth),0,0,1);
       continue;
     }
     mixed=mixed || hitKind!=kind;

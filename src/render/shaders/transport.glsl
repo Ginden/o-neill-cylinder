@@ -255,12 +255,14 @@ vec2 pathRadiance(vec3 p,vec3 direction) {
   bool neeReachable=true;
   bool inside=true;
   int mirrorBounces=0,order=0;
+  bool cloudPath=false;
   // Every camera ray estimates single scattering by air with one forced
   // collision on its segment; analog air collisions there omit that term
   // (no next-event estimate, no direct solar hit) to avoid counting it twice.
   bool forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0,singleAir=false,cameraSegment=true;
   float pending=-1.0;
-  for (int iteration=0;iteration<65;iteration++) {
+  for (int iteration=0;iteration<1025;iteration++) {
+    if (!uClouds && iteration>=65) break;
     if (!inside) {
       float closest=shellHit(p,direction);
       int panel=-1;
@@ -321,6 +323,7 @@ vec2 pathRadiance(vec3 p,vec3 direction) {
         connectWeight=weight*scattering*(1.0-survival)/(uAirMajorant*exp(-uAirMajorant*t))*shadowTransmission(p,direction,t);
       }
     } else if (mediumEvent(p,direction,distance,weight,point,species)) {
+      cloudPath=cloudPath || species==2;
       // Only the camera segment itself; segments after a pane reflection are not
       // covered by the forced estimate.
       singleAir=cameraSegment && species<2;cameraSegment=false;
@@ -388,7 +391,10 @@ vec2 pathRadiance(vec3 p,vec3 direction) {
     // Direct lighting is already estimated above. Terminate weak continuation
     // paths from the first event; surviving paths retain their expected energy.
     if (order>=1 && roulette) {
-      float survival=min(0.95,weight);
+      // A compulsory 5% loss per collision makes the hundreds of conservative
+      // droplet scatterings in fog exponentially rare, extremely bright paths.
+      // Still terminate weak paths, but let unit-throughput cloud paths live.
+      float survival=min(cloudPath ? 1.0 : 0.95,weight);
       if (randomValue()>=survival) break;
       weight/=survival;
     }

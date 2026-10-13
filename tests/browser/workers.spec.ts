@@ -147,12 +147,12 @@ test('live cloud updates retain spectral history and pausing converges the froze
     // Recover each independent spectral sample from the static running means.
     // Then compare live GPU output to a CPU temporal average over those same rays.
     const means: Float32Array[] = [];
-    for (let n = 0; n < 64; n++) means.push(await sample());
+    for (let n = 0; n < 68; n++) means.push(await sample());
     renderer.apply({ ...settings, paused: false });
     renderer.resize(32, 32, 'fast', 1);
     const expected = new Float64Array(means[0].length);
     let difference = 0, scale = 0;
-    for (let n = 0; n < means.length; n++) {
+    for (let n = 0; n < 64; n++) {
       renderer.setWeather(snapshot);
       const actual = await sample();
       for (let i = 0; i < actual.length; i++) {
@@ -164,23 +164,33 @@ test('live cloud updates retain spectral history and pausing converges the froze
     }
     const liveSamples = renderer.samples;
     renderer.apply(settings);
+    // A last in-flight weather snapshot may arrive after the pause command.
+    renderer.setWeather(snapshot);
+    const samplesAtPause = renderer.samples;
     let paused = new Float32Array(0);
-    for (let n = 0; n < 4; n++) paused = await sample();
+    for (let n = 64; n < 68; n++) {
+      paused = await sample();
+      for (let i = 0; i < paused.length; i++) {
+        const independent = (n + 1) * means[n][i] - n * means[n - 1][i];
+        expected[i] += (independent - expected[i]) / (n - 64 + 33);
+      }
+    }
     let pausedDifference = 0;
-    for (let i = 0; i < paused.length; i++) pausedDifference = Math.max(pausedDifference, Math.abs(paused[i] - means[3][i]));
+    for (let i = 0; i < paused.length; i++) pausedDifference = Math.max(pausedDifference, Math.abs(paused[i] - expected[i]));
     const pausedSamples = renderer.samples;
     renderer.apply({ ...settings, paused: false });
     renderer.setWeather({ ...snapshot, revision: 2 });
     const resetSamples = renderer.samples;
     const error = renderer.renderer.getContext().getError();
     renderer.dispose(); canvas.remove();
-    return { liveSamples, relativeDifference: difference / scale, pausedSamples, pausedDifference, resetSamples, error };
+    return { liveSamples, samplesAtPause, relativeDifference: difference / scale, pausedSamples, pausedDifference: pausedDifference / scale, resetSamples, error };
   });
   expect(errors).toEqual([]);
   expect(result.liveSamples).toBe(64);
   expect(result.relativeDifference).toBeLessThan(1e-5);
-  expect(result.pausedSamples).toBe(4);
-  expect(result.pausedDifference).toBeLessThan(1e-6);
+  expect(result.samplesAtPause).toBe(result.liveSamples);
+  expect(result.pausedSamples).toBe(result.liveSamples+4);
+  expect(result.pausedDifference).toBeLessThan(1e-5);
   expect(result.resetSamples).toBe(0);
   expect(result.error).toBe(0);
 });

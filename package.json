@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:browser": "playwright test",
     "check": "npm run lint && npm run test && npm run build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:render": "playwright test tests/browser/clouds.spec.ts tests/browser/refinement.spec.ts --grep \"sparse cloud|cloud filtering depth|crown\""
   },
   "dependencies": {
     "@mdi/js": "^7.4.47",

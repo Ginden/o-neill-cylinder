@@ -7,6 +7,7 @@ uniform sampler2D uSurface;
 uniform sampler2D uHaze;
 uniform sampler2D uGuideGeometry;
 uniform sampler2D uGuideAlbedo;
+uniform sampler2D uGuideMedium;
 uniform mat3 uMaterialXYZ;
 uniform vec2 uSize;
 uniform float uStride;
@@ -57,8 +58,9 @@ void main() {
     ivec2 p=clamp(center+ivec2(x,y),ivec2(0),last);
     variance+=kernel(x)*kernel(y)*vec2(texelFetch(uSurface,p,0).a,texelFetch(uHaze,p,0).a);
   }
-  vec2 sigma=4.0*sqrt(variance)+1e-6;
   float tolerance=max(geometry.a,0.001)*uStride;
+  float mediumDepth=texelFetch(uGuideMedium,center,0).r;
+  float mediumTolerance=max(mediumDepth,0.001)*uStride;
   // Luminance uses all edge-stopping weights. Chromaticity uses only geometric
   // ones: each sample carries one wavelength, so luminance stopping would favor
   // neighbors that sampled similar wavelengths and keep color speckle. The
@@ -69,22 +71,36 @@ void main() {
     ivec2 p=clamp(center+ivec2(x,y)*int(uStride),ivec2(0),last);
     vec4 otherGeometry=texelFetch(uGuideGeometry,p,0),otherDomain=texelFetch(uGuideAlbedo,p,0);
     vec4 otherSurface=texelFetch(uSurface,p,0),otherHaze=texelFetch(uHaze,p,0);
+    // A zero-contribution pixel is uncertain, not an edge. Include the other
+    // pixel's uncertainty even when it lies beyond the center's small pool.
+    vec2 sigma=4.0*sqrt(variance+vec2(otherSurface.a,otherHaze.a))+1e-6;
+    vec2 signal=vec2(surface.y*surface.y,haze.y*haze.y),otherSignal=vec2(otherSurface.y*otherSurface.y,otherHaze.y*otherHaze.y);
+    vec2 confidence=min(signal/(signal+variance+1e-12),otherSignal/(otherSignal+vec2(otherSurface.a,otherHaze.a)+1e-12));
     float k=kernel(x)*kernel(y);
     float depth=abs(otherGeometry.a-geometry.a);
     bool sameDomain=domain.a<0.0 || otherDomain.a<0.0 || abs(otherDomain.a-domain.a)<0.5;
+    bool diffuse=(domain.a<2.0 || domain.a>3.5) && (otherDomain.a<2.0 || otherDomain.a>3.5);
     // Crown and roof normals change from pixel to pixel; chromaticity ignores them.
     float surfaceGeometry=sameDomain ? k*exp(-depth/(0.01*tolerance+0.0005)) : 0.0;
-    float surfaceWeight=surfaceGeometry*pow(max(0.0,dot(geometry.xyz,otherGeometry.xyz)),32.0)*exp(-abs(otherSurface.y-surface.y)/sigma.x);
+    float surfaceDetail=surfaceGeometry*pow(max(0.0,dot(geometry.xyz,otherGeometry.xyz)),32.0);
+    // Isolated noisy crowns cannot estimate their illumination from matching
+    // normals alone. Borrow diffuse lighting while it is uncertain, then restore
+    // normal/material edge stopping as the frozen image gains evidence.
+    float diffuseGeometry=k*exp(-depth/(0.05*tolerance+0.002));
+    float surfaceWeight=(uCloudy && diffuse ? mix(diffuseGeometry,surfaceDetail,confidence.x) : surfaceDetail)*exp(-confidence.x*abs(otherSurface.y-surface.y)/sigma.x);
     // In-scattered light varies smoothly with path length and direction.
-    float hazeGeometry=k*exp(-depth/(0.05*tolerance+0.002));
-    float hazeWeight=hazeGeometry*exp(-abs(otherHaze.y-haze.y)/sigma.y);
-    surfaceSum+=vec4(surfaceWeight*otherSurface.rgb,surfaceWeight*surfaceWeight*otherSurface.a);
-    hazeSum+=vec4(hazeWeight*otherHaze.rgb,hazeWeight*hazeWeight*otherHaze.a);
+    float volumeDistance=abs(texelFetch(uGuideMedium,p,0).r-mediumDepth);
+    float hazeGeometry=k*exp(-volumeDistance/(0.05*mediumTolerance+0.002));
+    float hazeWeight=hazeGeometry*exp(-confidence.y*abs(otherHaze.y-haze.y)/sigma.y);
+    // Successive à-trous passes reuse overlapping samples. Treating these as
+    // independent collapses variance and locks in sparse spectral fireflies.
+    surfaceSum+=vec4(surfaceWeight*otherSurface.rgb,surfaceWeight*otherSurface.a);
+    hazeSum+=vec4(hazeWeight*otherHaze.rgb,hazeWeight*otherHaze.a);
     // Cloud-lit diffuse materials share a slowly varying illumination color
     // after demodulation. Pool that color across trees/fields/roofs; isolated
     // crown pixels otherwise retain single-wavelength speckles indefinitely.
-    // Luminance still respects normals and material edges, as do glass/water.
-    bool diffuse=(domain.a>=0.0 && (domain.a<2.0 || domain.a>3.5)) && (otherDomain.a>=0.0 && (otherDomain.a<2.0 || otherDomain.a>3.5));
+    // Confident luminance respects normals/material edges; glass and water
+    // always keep their own domains.
     float colorGeometry=uCloudy && diffuse ? hazeGeometry : surfaceGeometry;
     surfaceWide+=vec4(otherSurface.rgb,1.0)*colorGeometry;
     hazeWide+=vec4(otherHaze.rgb,1.0)*hazeGeometry;
@@ -92,6 +108,6 @@ void main() {
   }
   vec3 surfaceColor=surfaceWide.rgb/surfaceWide.a,hazeColor=hazeWide.rgb/hazeWide.a;
   float surfaceLuminance=surfaceSum.y/total.x,hazeLuminance=hazeSum.y/total.y;
-  outSurface=vec4(surfaceColor*(surfaceLuminance/max(surfaceColor.y,1e-12)),surfaceSum.a/(total.x*total.x));
-  outHaze=vec4(hazeColor*(hazeLuminance/max(hazeColor.y,1e-12)),hazeSum.a/(total.y*total.y));
+  outSurface=vec4(surfaceColor*(surfaceLuminance/max(surfaceColor.y,1e-12)),surfaceSum.a/total.x);
+  outHaze=vec4(hazeColor*(hazeLuminance/max(hazeColor.y,1e-12)),hazeSum.a/total.y);
 }

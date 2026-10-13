@@ -58,12 +58,12 @@ test('keeps subpixel window rings in the pane domain and detects mixed edge cove
   await openIsolatedPage(page);
   const result=await page.evaluate(async source=>{
     const module='/node_modules/three/build/three.module.js',THREE=await import(module);
-    const renderer=new THREE.WebGLRenderer(),target=new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false});
+    const renderer=new THREE.WebGLRenderer(),target=new THREE.WebGLRenderTarget(1,1,{count:3,type:THREE.FloatType,depthBuffer:false});
     const matrix=new THREE.Matrix4();
     const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
       vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',fragmentShader:source,
       uniforms:{uRadius:{value:4},uLength:{value:24},uTerrainHeight:{value:0.2},uWindowFraction:{value:0.45},
-        uCachedTerrain:{value:false},uCameraPosition:{value:new THREE.Vector3()},uCameraMatrix:{value:matrix},
+        uCachedTerrain:{value:false},uCameraPosition:{value:new THREE.Vector3()},uCameraMatrix:{value:matrix},uWeather:{value:null},uCloudPhase:{value:null},
         uInverseProjection:{value:new THREE.Matrix4()},uResolution:{value:new THREE.Vector2(1,1)}}});
     const geometry=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene(),camera=new THREE.Camera();scene.add(new THREE.Mesh(geometry,material));
     const read=(angle:number)=>{

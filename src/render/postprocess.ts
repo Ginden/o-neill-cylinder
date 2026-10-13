@@ -12,7 +12,7 @@ export class DisplayDenoiser {
   private readonly output=new THREE.WebGLRenderTarget(1,1,{type:THREE.FloatType,depthBuffer:false});
   private readonly material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
     vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',fragmentShader:denoise,
-    uniforms:{uSurface:{value:null},uHaze:{value:null},uGuideGeometry:{value:null},uGuideAlbedo:{value:null},
+    uniforms:{uSurface:{value:null},uHaze:{value:null},uGuideGeometry:{value:null},uGuideAlbedo:{value:null},uGuideMedium:{value:null},
       uMaterialXYZ:{value:MATERIAL_XYZ},uSize:{value:new THREE.Vector2(1,1)},uStride:{value:1},uSamples:{value:1},uMode:{value:0},uCloudy:{value:false}}});
   private readonly scene=new THREE.Scene();
   private readonly camera=new THREE.Camera();
@@ -22,10 +22,11 @@ export class DisplayDenoiser {
     this.material.uniforms.uSize.value.set(width,height);
   }
   /** `accumulation` holds total radiance and first-collision haze; `guides` holds
-   * normal/depth and reflectance/domain. Returns filtered XYZ radiance. */
+   * normal/depth, reflectance/domain and cloud depth. Returns filtered XYZ radiance. */
   filter(renderer:THREE.WebGLRenderer,accumulation:{textures:THREE.Texture[]},guides:{textures:THREE.Texture[]},samples:number,cloudy=false) {
     const u=this.material.uniforms;
     u.uGuideGeometry.value=guides.textures[0];u.uGuideAlbedo.value=guides.textures[1];u.uSamples.value=samples;
+    u.uGuideMedium.value=guides.textures[2];
     u.uCloudy.value=cloudy;
     const draw=(mode:number,input:{textures:THREE.Texture[]},target:THREE.WebGLRenderTarget,stride=1)=>{
       u.uMode.value=mode;u.uStride.value=stride;u.uSurface.value=input.textures[0];u.uHaze.value=input.textures[1];
