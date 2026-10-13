@@ -72,3 +72,35 @@ test('denoises the static display without changing camera history or light-meter
   expect(result.measured).toBeGreaterThan(0);
   expect(result.retainedMeter).toBe(result.measured);
 });
+
+test('does not tint uniform radiance at mixed-coverage filter boundaries',async({page})=>{
+  await page.route('**/src/main.ts',route=>route.fulfill({contentType:'application/javascript',body:''}));
+  await page.goto('/');
+  const result=await page.evaluate(async()=>{
+    const threeModule='/node_modules/three/build/three.module.js',filterModule='/src/render/postprocess.ts';
+    const THREE=await import(threeModule),{DisplayDenoiser}=await import(filterModule);
+    const size=16,expected=[0.025,0.03,0.055],image=new Float32Array(size*size*4),geometry=new Float32Array(image.length),albedo=new Float32Array(image.length);
+    for(let i=0;i<size*size;i++) {
+      image.set([...expected,0.005],i*4);geometry.set([0,0,1,8],i*4);
+      // A cap pixel whose footprint also covers a window has no single diffuse albedo.
+      albedo.set([0.23,0.28,0.3,i%size===8 ? -1 : 1],i*4);
+    }
+    const textures=[image,geometry,albedo].map(data=>{
+      const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.FloatType);texture.needsUpdate=true;return texture;
+    });
+    const renderer=new THREE.WebGLRenderer(),plane=new THREE.PlaneGeometry(2,2),filter=new DisplayDenoiser(plane);filter.resize(size,size);
+    const output=filter.filter(renderer,textures[0],{textures:textures.slice(1)},128);
+    const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
+    const material=new THREE.ShaderMaterial({uniforms:{image:{value:output}},depthTest:false,depthWrite:false,
+      vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0,1);}',
+      fragmentShader:'uniform sampler2D image;varying vec2 vUv;void main(){gl_FragColor=texture2D(image,vUv);}'});
+    const scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(image.length);renderer.readRenderTargetPixels(target,0,0,size,size,pixels);
+    let maximumError=0;
+    for(let i=0;i<size*size;i++) for(let channel=0;channel<3;channel++) maximumError=Math.max(maximumError,Math.abs(pixels[i*4+channel]-expected[channel]));
+    const error=renderer.getContext().getError();filter.dispose();plane.dispose();target.dispose();material.dispose();textures.forEach(texture=>texture.dispose());renderer.dispose();
+    return {maximumError,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.maximumError).toBeLessThan(1e-6);
+});

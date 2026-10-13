@@ -116,12 +116,12 @@ float exteriorPath(inout vec3 p, inout vec3 d) {
 
 vec3 interiorNormal(vec3 p) {
   if (abs(p.z)>=uLength*0.5-0.001) return vec3(0,0,-sign(p.z));
-  if (windowAt(atan(p.y,p.x))) return -normalize(vec3(p.xy,0));
+  if (windowAt(atan(p.y,p.x)) && abs(length(p.xy)-uRadius)<0.001) return -normalize(vec3(p.xy,0));
   return surfaceNormal(p);
 }
 
 vec3 surfaceAlbedo(vec3 p, vec3 n) {
   if (abs(p.z)>=uLength*0.5-0.001) return vec3(0.23,0.28,0.3);
-  if (windowAt(atan(p.y,p.x))) return vec3(0.38,0.43,0.46);
+  if (windowAt(atan(p.y,p.x)) && abs(length(p.xy)-uRadius)<0.001) return vec3(0.38,0.43,0.46);
   return groundAlbedo(p,n);
 }

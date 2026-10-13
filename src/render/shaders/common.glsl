@@ -106,8 +106,16 @@ float groundHeight(vec2 p) {
 
 float surfaceDistance(vec3 p) {
   float theta = atan(p.y, p.x);
-  float height = windowAt(theta) ? 0.0 : uCachedTerrain
+  float height = uCachedTerrain
     ? texture(uTerrain,vec2((theta+PI)/(2.0*PI),p.z/uLength+0.5)).r
     : groundHeight(groundCoordinates(p));
-  return min(uRadius - length(p.xy) - height, uLength * 0.5 - abs(p.z));
+  float radius=length(p.xy);
+  float phase=(theta+PI*0.5)/(2.0*PI/3.0);
+  float margin=((1.0-uWindowFraction)*0.5-abs(fract(phase+0.5)-0.5))*(2.0*PI/3.0);
+  // Terrain is a solid clipped to each land sector, including its exposed
+  // terrace sides. Switching heights abruptly at the edge was not a distance
+  // field: it invented radial normals on these angular faces.
+  float landDistance=radius*sin(margin);
+  float terrainDistance=max(uRadius-radius-height,-landDistance);
+  return min(min(uRadius-radius,terrainDistance),uLength*0.5-abs(p.z));
 }
