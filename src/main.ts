@@ -90,7 +90,7 @@ function start() {
       refresh([spec.key]);
     });
   }
-  for (const key of ['clouds','atmosphere','denoise'] as const) element<HTMLInputElement>(key).addEventListener('change', event => {
+  for (const key of ['clouds','atmosphere','denoise','adaptiveExposure'] as const) element<HTMLInputElement>(key).addEventListener('change', event => {
     settings[key] = (event.target as HTMLInputElement).checked;
     refresh([key]);
     element<HTMLSelectElement>('preset').value = 'Custom';

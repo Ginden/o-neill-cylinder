@@ -18,6 +18,7 @@ export interface Settings {
   mirrorReflectivity: number;
   solarPower: number;
   exposure: number;
+  adaptiveExposure: boolean;
   terrainHeight: number;
   surfaceHeating: number;
   evaporation: number;
@@ -39,7 +40,7 @@ export const defaults: Settings = {
   aerosol: 0.006, aerosolRadius: 0.15, cloudRadius: 10,
   windowFraction: 0.45, windowTransmission: 0.9,
   lightMode: 'mirrors', sunAzimuth: 90, sunElevation: 90,
-  mirrorTilt: 0, mirrorReflectivity: 0.9, solarPower: 1, exposure: 2.2,
+  mirrorTilt: 0, mirrorReflectivity: 0.9, solarPower: 1, exposure: 1, adaptiveExposure: true,
   terrainHeight: 0.16, surfaceHeating: 0.018, evaporation: 0.000008,
   wind: 3, timeScale: 120, clouds: false, atmosphere: true, denoise:true, paused: false,
   diagnostic: 'natural', quality: 'balanced', view: 'valley', seed: 42

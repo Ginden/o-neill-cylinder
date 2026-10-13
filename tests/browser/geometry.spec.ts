@@ -1,3 +1,4 @@
+import {openIsolatedPage} from './isolated';
 import {expect,test} from '@playwright/test';
 import {readFile} from 'node:fs/promises';
 
@@ -54,8 +55,7 @@ test('intersects exposed land-sector terrace faces with their angular normals',a
 
 test('keeps subpixel window rings in the pane domain and detects mixed edge coverage',async({page})=>{
   const source=(await Promise.all(['common','surface','geometry','guides'].map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
-  await page.route('**/src/main.ts',route=>route.fulfill({contentType:'application/javascript',body:''}));
-  await page.goto('/');
+  await openIsolatedPage(page);
   const result=await page.evaluate(async source=>{
     const module='/node_modules/three/build/three.module.js',THREE=await import(module);
     const renderer=new THREE.WebGLRenderer(),target=new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false});

@@ -1,3 +1,4 @@
+import {openIsolatedPage} from './isolated';
 import { expect,test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -64,5 +65,52 @@ test('GPU ratio tracking and collision survival agree with analytic Beer–Lambe
     const expected=Math.exp(-0.013558*distance);
     expect(Math.abs(result.means[i].ratio-expected)).toBeLessThan(0.01);
     expect(Math.abs(result.means[i].survival-expected)).toBeLessThan(0.025);
+  }
+});
+
+test('rough water conserves reflected energy and obeys reciprocity',async({page})=>{
+  const files=['common','surface','geometry','spectrum','transport'];
+  const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async(source)=>{
+    const threeModule='/node_modules/three/build/three.module.js',THREE=await import(threeModule);
+    const renderer=new THREE.WebGLRenderer(),target=new THREE.WebGLRenderTarget(3,1,{type:THREE.FloatType,depthBuffer:false});
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',
+      fragmentShader:source+`
+        out vec4 outColor;
+        void main(){
+          rngState=uint(gl_FragCoord.x)*9781u+0x68bc21ebu;
+          float angle=floor(gl_FragCoord.x)*40.0*PI/180.0;
+          vec3 normal=vec3(0,0,1),outgoing=vec3(sin(angle),0,cos(angle));
+          float energy=0.0,reciprocity=0.0;
+          for(int i=0;i<4096;i++) {
+            vec3 incoming=waterSample(normal,outgoing);
+            vec2 bsdf=waterReflection(normal,outgoing,incoming);
+            if(bsdf.y>0.0) {
+              energy+=bsdf.x/bsdf.y/4096.0;
+              float a=bsdf.x/dot(normal,incoming);
+              float b=waterReflection(normal,incoming,outgoing).x/dot(normal,outgoing);
+              reciprocity=max(reciprocity,abs(a-b)/max(1e-8,a+b));
+            }
+          }
+          outColor=vec4(energy,reciprocity,0,1);
+        }`});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(12);renderer.readRenderTargetPixels(target,0,0,3,1,pixels);
+    const error=renderer.getContext().getError();material.dispose();plane.dispose();target.dispose();renderer.dispose();
+    return {pixels:[...pixels],error};
+  },source);
+  await test.info().attach('water-reflectance',{body:JSON.stringify(result),contentType:'application/json'});
+  expect(result.error).toBe(0);
+  // Nearly smooth water at normal incidence approaches the analytic Fresnel value.
+  expect(result.pixels[0]).toBeCloseTo(((1.333-1)/(1.333+1))**2,2);
+  expect(result.pixels[0]).toBeGreaterThan(0.018);
+  expect(result.pixels[8]).toBeGreaterThan(result.pixels[0]*5);
+  for(const i of [0,4,8]) {
+    expect(result.pixels[i]).toBeLessThanOrEqual(1);
+    // Single-precision half-vector cancellation is most sensitive at grazing angles.
+    expect(result.pixels[i+1]).toBeLessThan(5e-4);
   }
 });

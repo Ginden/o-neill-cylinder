@@ -6,6 +6,8 @@ import terrain from './shaders/terrain.glsl?raw';
 import light from './shaders/preview-light.glsl?raw';
 import vertex from './shaders/preview-vertex.glsl?raw';
 import fragment from './shaders/preview-fragment.glsl?raw';
+import tonemap from './shaders/tonemap.glsl?raw';
+import { MATERIAL_XYZ,SOLAR_WHITE_BALANCE,LAMP_XYZ } from './color';
 import { SOLAR_ILLUMINANCE } from './solar';
 
 const fullscreenVertex='void main(){gl_Position=vec4(position.xy,0.0,1.0);}';
@@ -43,9 +45,10 @@ export class NavigationPreview {
     shapes[1].translate(0,0,-0.5);shapes[2].translate(0,0,0.5);
     shapes.forEach((shape,i)=>{
       const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,side:THREE.DoubleSide,
-        vertexShader:vertex,fragmentShader:common+surface+geometry+fragment,
+        vertexShader:vertex,fragmentShader:common+surface+geometry+'uniform float uReferenceIlluminance;\n'+tonemap+fragment,
         uniforms:{...uniforms,uSurfaceKind:{value:i===0 ? 0 : 1},uPreviewLight:{value:this.light.texture},
-          uExposure:{value:1},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE}}});
+          uExposure:{value:1},uAdaptive:{value:true},uWhiteBalance:{value:SOLAR_WHITE_BALANCE},
+          uMaterialXYZ:{value:MATERIAL_XYZ},uLampXYZ:{value:LAMP_XYZ},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE}}});
       const mesh=new THREE.Mesh(shape,material);mesh.frustumCulled=false;
       this.materials.push(material);this.meshes.push(mesh);this.scene.add(mesh);
     });
@@ -64,8 +67,8 @@ export class NavigationPreview {
     }
     renderer.setRenderTarget(null);
   }
-  render(renderer:THREE.WebGLRenderer,camera:THREE.Camera,exposure:number) {
-    for(const material of this.materials) material.uniforms.uExposure.value=exposure;
+  render(renderer:THREE.WebGLRenderer,camera:THREE.Camera,exposure:number,adaptive:boolean) {
+    for(const material of this.materials) {material.uniforms.uExposure.value=exposure;material.uniforms.uAdaptive.value=adaptive;}
     renderer.setRenderTarget(null);renderer.setClearColor(0x000000);renderer.render(this.scene,camera);
   }
   dispose() {

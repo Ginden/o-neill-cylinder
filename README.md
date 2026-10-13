@@ -2,7 +2,7 @@
 
 A progressive spectral path tracer and coarse moist-convection experiment inside a rotating, sealed cylinder. Everything runs locally in the browser; there is no backend, CDN, or analytics.
 
-![Clear-air ground view of the cylinder and experiment controls](public/preview.png)
+![Clear-air cylinder view with adaptive display, refined at 128 samples](public/preview.png)
 
 ## Run
 
@@ -13,7 +13,7 @@ npm ci
 npm run dev
 ```
 
-Open the printed local address (normally <http://127.0.0.1:5173/>). Dragging, flying, scrolling and viewpoint changes use a rasterized navigation preview; 200 ms after movement stops, the spectral path tracer resumes. **Denoise display** is enabled by default and filters only the displayed image, with depth, surface normals and material colors guiding edge preservation. Disable it in Display to inspect raw sampling noise. The light meter always reads the unfiltered accumulation. Use **Fast** for a smaller ray budget; **Balanced** is the default, and **High** increases detail. Traced pixels are capped at 98,304 / 262,144 / 786,432 respectively while the canvas retains its native navigation resolution. All three use the same transport model. Hold the camera still to accumulate paths. Moving the camera, changing optical settings, or receiving a new cloud field restarts accumulation; changing exposure or display denoising does not. Particle-size changes calculate new Mie tables and may briefly take time. GPU performance has not been measured on physical graphics hardware in the development environment. Software rendering is slow. A GPU fence limits expensive refinement to one pending pass, and asynchronous readback keeps the light meter from blocking navigation. Actual hardware performance depends on viewport size, GPU and cloud optical depth.
+Open the printed local address (normally <http://127.0.0.1:5173/>). Dragging, flying, scrolling and viewpoint changes use a rasterized navigation preview; 200 ms after movement stops, the spectral path tracer resumes. **Denoise display** is enabled by default and filters only the displayed image, with depth, surface normals and material colors guiding edge preservation. Disable it in Display to inspect raw sampling noise. The light meter always reads the unfiltered accumulation. Use **Fast** for a smaller ray budget; **Balanced** is the default, and **High** increases detail. Traced pixels are capped at 98,304 / 524,288 / 1,572,864 respectively while the canvas retains its native navigation resolution. All three use the same transport model. Hold the camera still to accumulate paths. Moving the camera, changing optical settings, or receiving a new cloud field restarts accumulation; changing exposure, visual adaptation, or display denoising does not. Particle-size changes calculate new Mie tables and may briefly take time. GPU performance has not been measured on physical graphics hardware in the development environment. Software rendering is slow. A GPU fence limits expensive refinement to one pending pass, and asynchronous readback keeps the light meter from blocking navigation. Actual hardware performance depends on viewport size, GPU and cloud optical depth.
 
 ```sh
 npm run check          # strict lint, numerical tests, type checking, production build
@@ -33,11 +33,11 @@ GitHub Actions runs these checks on pushes and pull requests. When testing again
 - **Habitat** adjusts dimensions, wall gravity, window coverage, terrain, pressure, temperature, and lapse rate.
 - **Light** adjusts the actual Sun direction, finite mirror deployment and reflectivity, window absorption, and aerosol/cloud particle size.
 - **Weather** adjusts initial humidity, surface heating, evaporation, wind, time acceleration, and random seed. Physical/source changes restart the weather; display changes do not.
-- **Display** offers atmosphere on/off, quality, fixed exposure, and diagnostic layers.
+- **Display** offers atmosphere on/off, quality, adaptive viewing, fixed exposure, and diagnostic layers.
 - **Copy link** encodes experiment settings in the URL. **Export/Import experiment JSON** provides portable configuration files. These save initial conditions and the selected viewpoint, not evolved weather or an arbitrary free-flight camera pose.
 - **Save image** exports the rendered canvas at its current resolution, without the interface.
 
-Suggested comparisons: clear daylight against vacuum at fixed exposure; aerosol-free against hazy air; ground against axis views; small against giant cylinders; direct sunlight against reflected beams. The **Night** preset removes solar illumination while keeping the same exposure. Its emitting settlement patches have 2 cd/m² luminance and a 2800 K spectrum; scattered and reflected lamp light comes from traced paths. There is no artificial star field. Dark photographs are expected at daytime exposure. Exposure does not simulate dark-adapted vision.
+For optical comparisons, disable **Adapt to scene brightness** and keep exposure fixed. Suggested comparisons: clear daylight against vacuum at fixed exposure; aerosol-free against hazy air; ground against axis views; small against giant cylinders; direct sunlight against reflected beams. The **Night** preset removes solar illumination. Adaptive viewing responds to the remaining illumination; fixed exposure holds the camera gain constant. Its emitting settlement patches have 2 cd/m² luminance and a 2800 K spectrum; scattered and reflected lamp light comes from traced paths. There is no artificial star field. Dark photographs are expected at fixed daytime exposure. Adaptive viewing is a display approximation, not a complete model of dark-adapted vision.
 
 ## Physics
 
@@ -67,7 +67,7 @@ At zero lapse, the limiting expression is exponential. `backgroundAt()` implemen
 
 ### Spectral light transport
 
-The renderer estimates the radiative-transfer equation by Monte Carlo path tracing. Each camera sample selects a wavelength uniformly on 380–780 nm, follows scattering and reflection events, and contributes spectral radiance to CIE XYZ. Linear XYZ is accumulated in two floating-point render targets. Only the display pass converts to linear sRGB, applies exposure/ACES, and encodes sRGB. No ambient brightness, diffuse cloud fill, or fabricated solar beam is added.
+The renderer estimates the radiative-transfer equation by Monte Carlo path tracing. Each camera sample selects a wavelength uniformly on 380–780 nm, follows scattering and reflection events, and contributes spectral radiance to CIE XYZ. Linear XYZ is accumulated in two floating-point render targets. Only the display pass applies viewing adaptation, converts to linear sRGB, tone maps luminance, compresses out-of-gamut highlights toward white, and encodes sRGB. No ambient brightness, diffuse cloud fill, or fabricated solar beam is added.
 
 The Sun is a finite 0.533° disk at 1 au with a 5772 K Planck spectrum. Irradiance follows its radiance and solid angle. Three **explicit, finite rectangular mirrors** hinge at the −Z ends of the window bands. Each panel is √2 × cylinder length along its deployment direction and one window chord across. Deployment is 45° plus the selected offset. Rays must hit the reflecting face and miss intervening blockers. Specular reflection determines outgoing directions; changing Sun direction does not magically retarget the mirrors. Mirror reflectivity is a specified neutral material property. Exterior hull and mirror backs are absorbing black surfaces.
 
@@ -77,9 +77,20 @@ Dry-air Rayleigh scattering uses a 550 nm coefficient of 0.013558 km⁻¹ at ref
 
 Spectral coefficients and source radiance are prepared once per camera path. Cloud-free rays use the global clear-air majorant directly; cloudy rays traverse interpolation cells. Analog delta tracking samples medium collisions. Ratio tracking estimates light-path transmittance using interpolation-cell majorants that bound all eight cloud-density texels. Finite-disk next-event estimation and multiple importance sampling connect diffuse/volume vertices through actual windows and mirrors to the Sun. Diffuse surface interreflection and multiple medium scattering come from continuing paths with Russian roulette.
 
-The navigation preview rasterizes a cylinder mesh and endcaps with cached direct illumination. Its monochromatic direct-light cache omits terrain shadows, indirect light and volume scattering; it is for orientation while moving, not optical measurement. Static refinement switches back to the physical renderer. The display filter estimates sampling variance from accumulated spectral second moments and uses four 3 × 3 edge-aware à-trous passes at strides 1, 2, 4 and 8. Diffuse colors are demodulated while filtering and restored afterward to preserve terrain markings. Guides sample four pixel quadrants as well as the center. Thin window rings share the pane filtering domain; mixed-material footprints retain total radiance and use consistent units when filtering across their neighbors. The filter can soften unresolved detail or low-sample shadow boundaries. It does not change radiance accumulation or meter data.
+The navigation preview rasterizes a cylinder mesh and endcaps with cached direct illumination. Its monochromatic direct-light cache omits terrain shadows, indirect light and volume scattering; it is for orientation while moving, not optical measurement. Static refinement switches back to the physical renderer. The display filter estimates sampling variance from accumulated spectral second moments and uses four 3 × 3 edge-aware à-trous passes at strides 1, 2, 4 and 8. Total XYZ radiance is filtered directly, with material differences acting as edge weights. Surface albedo is never divided out of the additive atmospheric light: doing so imprints surface patterns onto haze. Guides sample four pixel quadrants as well as the center. Thin window rings share the pane filtering domain. The variance-dependent threshold pools neighboring uncertainty so zero-contribution pixels do not become permanent black speckles, and decreases as samples accumulate. The filter can still soften unresolved detail or low-sample shadow boundaries. It does not change radiance accumulation or meter data.
+
+### Viewing adaptation
+
+**Adapt to scene brightness** is enabled by default. A 32 × 32 area meter samples the unfiltered HDR image asynchronously every eight accumulated samples. The geometric mean of positive luminances, trimmed at the 10th/90th percentiles, sets display exposure; empty space and small solar glints do not dominate the view. Exposure maps the metered scene luminance to approximately 18% display-linear middle gray, with a 0.01 cd/m² floor to bound amplification in darkness. The initial valid reading establishes adaptation, and subsequent changes approach it in log luminance with a 0.6 s brightening / 3 s darkening time constant. Camera and weather changes retain adaptation while invalidating stale meter readbacks.
+
+The adaptive display uses Bradford adaptation from the simulated solar white to D65. Color is gradually reduced between 0.005 and 5 cd/m², using pixel luminance before exposure. Both navigation and refinement share a luminance-based filmic curve and highlight gamut compression. Navigation integrates the same spectral material basis under the Sun, rather than interpreting wavelength anchors as RGB colors.
+
+These are explicit display approximations. They do not model rod spectral sensitivity, retinal local adaptation, glare, acuity loss, or the full time course of dark adaptation. A monitor cannot reproduce the scene’s physical luminance range. Optical depth and atmospheric contrast loss remain in the radiance; adaptation does not remove haze or create light in black pixels. Disable adaptation for fixed-exposure measurements and comparisons.
+
 
 The **sightline luminance meter** reports the central 5 × 5 accumulated pixel average in cd/m² before exposure; it is unavailable on diagnostic layers and during navigation preview. This is photopic luminance for the specified scene and source, not a prediction of a person's recognition threshold. A shaded surface can receive substantial indirect daylight. The same object at night may be unrecognizable without illumination, irrespective of increased photographic exposure.
+
+River surfaces use a dielectric GGX reflection model with slope parameter 0.045 and water index 1.333, including Fresnel reflection, Smith masking, solar next-event estimation and BSDF sampling with MIS. Transmitted energy is absorbed in deep water; shallow-water beds and water-volume scattering are not modeled.
 
 **Scene assumptions and numerical limits:** interior surfaces have specified piecewise-linear diffuse reflectance spectra with 440/550/680 nm anchors, not measured habitat materials. Procedural settlement roofs are reflectance patterns, not resolved building meshes; night emitting patches are a specified source distribution. The exterior contains the Sun, hull and panels, with no planet, moon or stellar catalog. The source spectrum does not include measured solar absorption lines or limb darkening. No polarization, atmospheric refraction, nonspherical aerosol optics, measured bidirectional surface reflectance, or finite glass thickness is resolved. Paths stop at 64 events; geometry and medium segments have 256-step and 2048-proposal budgets. These limits, table interpolation, 15 particle-size quadrature bins, noisy finite samples, and procedural geometry require convergence/reference validation before making quantitative habitat predictions. The weather density field remains coarse.
 
@@ -104,7 +115,7 @@ The initial vapor mixing ratio is approximately uniform, based on wall relative 
 
 | Layer | Meaning |
 | --- | --- |
-| Natural light | Accumulated spectral light paths, displayed with fixed camera exposure |
+| Natural light | Accumulated spectral light paths, displayed with adaptive or fixed exposure |
 | RGB transmittance | Unscattered transmission at 680, 550 and 440 nm, including particles |
 | Air column | Integrated reference-density air along the view ray; blue-to-gold visualization |
 | Liquid-water column | Integrated cloud liquid; dark-to-mint visualization |
@@ -121,6 +132,7 @@ The central **clear-air sightline** readout uses the sealed-cylinder intersectio
 | `src/render/shaders/` | Spectral path tracing, explicit geometry, Fresnel glass and display conversion |
 | `src/render/mie.ts`, `solar.ts`, `majorant.ts` | Particle cross-sections/phase tables, source calibration and medium bounds |
 | `src/optics.ts` | Explicit mirror dimensions, reflection geometry and CPU window visibility |
+| `src/render/vision.ts`, `color.ts`, `postprocess.ts` | Display adaptation, spectral preview colors, filtering and metering |
 | `src/render/` | Three.js setup, 3D texture uploads, local-up navigation |
 | `src/ui/` | Parameter controls, imported settings validation, model notes |
 | `tests/` | Numerical physics/regression checks and browser rendering checks |
@@ -128,6 +140,9 @@ The central **clear-air sightline** readout uses the sealed-cylinder intersectio
 The renderer uses WebGL 2 for broad compatibility and straightforward custom GLSL. A future WebGPU backend could move weather updates to compute shaders. Next validation work would compare converged scenes against PBRT or another independent spectral renderer, measure convergence under dense clouds and extreme grazing rays, and replace assumed optical materials with measured spectra. A conservative/anelastic fluid solver is a separate climate-model improvement.
 
 ## References
+
+- [Ferwerda et al.: A Model of Visual Adaptation for Realistic Image Synthesis](https://www.graphics.cornell.edu/pubs/1996/FPSG96.pdf) — motivation and scope of perceptual rendering; the display here is a simpler approximation.
+- [Reinhard et al.: Photographic Tone Reproduction for Digital Images](https://www-old.cs.utah.edu/docs/techreports/2002/pdf/UUCS-02-001.pdf) — log-average metering and middle-gray exposure.
 
 - [PBRT 4: volumetric path tracing](https://www.pbr-book.org/4ed/Light_Transport_II_Volume_Rendering/Volume_Scattering_Integrators) and [dielectric optics](https://www.pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF).
 - [Prahl: Mie scattering algorithms and Wiscombe reference cases](https://miepython.readthedocs.io/en/stable/07_algorithm.html).

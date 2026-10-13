@@ -45,7 +45,7 @@ export const sliders: Record<string, SliderSpec[]> = {
     { key: 'seed', label: 'Weather seed', min: 1, max: 999, step: 1, unit: '' }
   ],
   display: [
-    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Each stop doubles brightness. Use a fixed value for comparisons; exposure changes the photograph, not physical luminance or human dark adaptation.' }
+    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Each stop doubles brightness. Adjust the adapted view’s brightness, or disable adaptation for fixed-exposure comparisons. Physical luminance is unchanged.' }
   ]
 };
 
@@ -70,7 +70,7 @@ export function renderControls(settings: Settings) {
     <div class="panes">${Object.entries(sliders).map(([group,specs],i) => `<section role="tabpanel" id="pane-${group}" aria-labelledby="tab-${group}" ${i ? 'hidden' : ''}>
       ${group === 'light' ? `<label class="select-label" for="lightMode">Illumination</label><select id="lightMode"><option value="mirrors">Sun + exterior mirror panels</option><option value="sun">Sun · mirrors removed</option></select>` : ''}
       ${group === 'weather' ? `<label class="toggle"><span>Simulate clouds</span><input id="clouds" type="checkbox" ${settings.clouds ? 'checked' : ''}/></label><div class="weather-note">A coarse moist-convection model. Clouds emerge through condensation; water and latent heat are exchanged together.</div>` : ''}
-      ${group === 'display' ? `<label class="toggle"><span>Atmospheric scattering</span><input id="atmosphere" type="checkbox" ${settings.atmosphere ? 'checked' : ''}/></label><label class="toggle"><span>Denoise display</span><input id="denoise" type="checkbox" ${settings.denoise ? 'checked' : ''}/></label><label class="select-label" for="quality">Image resolution</label><select id="quality"><option value="fast">Fast · lower detail</option><option value="balanced">Balanced · medium detail</option><option value="high">High · higher detail</option></select><p class="hint">Movement uses a raster preview. Stop to refine physical light paths. Display denoising preserves the raw light-meter values; turn it off to inspect sampling noise. Pause weather for a converged cloud field.</p><label class="select-label" for="diagnostic">View layer</label><select id="diagnostic"><option value="natural">Natural light</option><option value="transmission">RGB transmittance</option><option value="density">Air column</option><option value="cloud">Liquid-water column</option></select>` : ''}
+      ${group === 'display' ? `<label class="toggle"><span>Adapt to scene brightness</span><input id="adaptiveExposure" type="checkbox" ${settings.adaptiveExposure ? 'checked' : ''}/></label><p class="hint">Gradual brightness adaptation, daylight white balance and reduced color in dim light. A display approximation of vision.</p><label class="toggle"><span>Atmospheric scattering</span><input id="atmosphere" type="checkbox" ${settings.atmosphere ? 'checked' : ''}/></label><label class="toggle"><span>Denoise display</span><input id="denoise" type="checkbox" ${settings.denoise ? 'checked' : ''}/></label><label class="select-label" for="quality">Image resolution</label><select id="quality"><option value="fast">Fast · lower detail</option><option value="balanced">Balanced · medium detail</option><option value="high">High · higher detail</option></select><p class="hint">Movement uses a raster preview. Stop to refine physical light paths. Display denoising preserves the raw light-meter values; turn it off to inspect sampling noise. Pause weather for a converged cloud field.</p><label class="select-label" for="diagnostic">View layer</label><select id="diagnostic"><option value="natural">Natural light</option><option value="transmission">RGB transmittance</option><option value="density">Air column</option><option value="cloud">Liquid-water column</option></select>` : ''}
       ${specs.map(spec => slider(spec,settings)).join('')}
       ${group === 'weather' ? `<div class="weather-stats"><div><span>Cloud volume</span><strong id="cloud-fraction">—</strong></div><div><span>Peak wind</span><strong id="max-wind">—</strong></div><div><span>Liquid water</span><strong id="cloud-mass">—</strong></div></div><button class="secondary wide" id="reset-weather">Restart weather</button>` : ''}
       ${group === 'display' ? `<button class="secondary wide" id="export-settings">Export experiment JSON</button><label class="secondary wide import-label" for="import-settings">Import experiment JSON<input id="import-settings" type="file" accept="application/json,.json"/></label>` : ''}
@@ -83,7 +83,7 @@ export function syncControls(settings: Settings) {
     (document.getElementById(spec.key) as HTMLInputElement).value = String(spec.logarithmic ? Math.log2(settings[spec.key]) : settings[spec.key]);
     document.getElementById(`${spec.key}-value`)!.textContent = formatValue(spec, settings[spec.key]);
   }
-  for (const key of ['clouds','atmosphere','denoise'] as const) (document.getElementById(key) as HTMLInputElement).checked = settings[key];
+  for (const key of ['clouds','atmosphere','denoise','adaptiveExposure'] as const) (document.getElementById(key) as HTMLInputElement).checked = settings[key];
   for (const key of ['lightMode','quality','diagnostic'] as const) (document.getElementById(key) as HTMLSelectElement).value = settings[key];
 }
 
@@ -108,7 +108,7 @@ export function parseSettings(input: unknown): Settings {
       Object.assign(s, { [key]: values[key] });
     }
   }
-  for (const key of ['clouds','atmosphere','denoise','paused'] as const) {
+  for (const key of ['clouds','atmosphere','denoise','adaptiveExposure','paused'] as const) {
     if (values[key] !== undefined) {
       if (typeof values[key] !== 'boolean') throw new Error(`Invalid ${key}.`);
       s[key] = values[key];

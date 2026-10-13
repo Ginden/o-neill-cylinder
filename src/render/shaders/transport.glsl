@@ -13,6 +13,42 @@ vec3 around(vec3 axis, float cosine, float phi) {
   return axis*cosine+sqrt(max(0.0,1.0-cosine*cosine))*(cos(phi)*tangent+sin(phi)*bitangent);
 }
 
+// Rough deep water: dielectric GGX reflection; transmitted energy is absorbed.
+// Both NEE and continuation use the same BSDF and solid-angle density.
+const float WATER_ALPHA=0.045;
+float waterFresnel(float cosine) {
+  float eta=1.333,c=clamp(cosine,0.0,1.0);
+  float ct=sqrt(1.0-(1.0-c*c)/(eta*eta));
+  float rs=(c-eta*ct)/(c+eta*ct),rp=(eta*c-ct)/(eta*c+ct);
+  return 0.5*(rs*rs+rp*rp);
+}
+float waterDistribution(float cosine) {
+  float a2=WATER_ALPHA*WATER_ALPHA;
+  float denominator=cosine*cosine*(a2-1.0)+1.0;
+  return a2/(PI*denominator*denominator);
+}
+float waterMasking(float cosine) {
+  return 2.0*cosine/(cosine+sqrt(WATER_ALPHA*WATER_ALPHA+(1.0-WATER_ALPHA*WATER_ALPHA)*cosine*cosine));
+}
+// Returns f * cos(theta_in) and the reflection sampling PDF.
+vec2 waterReflection(vec3 normal,vec3 outgoing,vec3 incoming) {
+  float noV=dot(normal,outgoing),noL=dot(normal,incoming);
+  if(noV<=0.0 || noL<=0.0) return vec2(0.0);
+  vec3 halfVector=normalize(outgoing+incoming);
+  float noH=max(0.0,dot(normal,halfVector));
+  // Symmetric half-angle expression avoids cancellation in grazing dot(v,h).
+  float voH=sqrt(max(1e-8,0.5*(1.0+dot(outgoing,incoming))));
+  float distribution=waterDistribution(noH);
+  float brdf=waterFresnel(voH)*distribution*waterMasking(noV)*waterMasking(noL)/(4.0*noV*noL);
+  return vec2(brdf*noL,distribution*noH/(4.0*voH));
+}
+vec3 waterSample(vec3 normal,vec3 outgoing) {
+  float u=randomValue();
+  float cosine=sqrt((1.0-u)/(1.0+(WATER_ALPHA*WATER_ALPHA-1.0)*u));
+  vec3 halfVector=around(normal,cosine,2.0*PI*randomValue());
+  return normalize(reflect(-outgoing,halfVector));
+}
+
 vec3 solarSample() {
   return around(uSun,1.0-randomValue()*(1.0-cos(SOLAR_RADIUS)),2.0*PI*randomValue());
 }
@@ -158,6 +194,10 @@ float directLight(vec3 p,vec3 normal,vec3 outgoing,int species,float albedo) {
   vec3 direction=source==0 ? sun : reflect(sun,uMirrorNormal[source-1]);
   float samplingPdf=species<0 ? max(0.0,dot(normal,direction))/PI : phasePdf(dot(outgoing,direction),species);
   float phase=species<0 ? samplingPdf : phasePhysical(dot(outgoing,direction),species);
+  if(species==-2) {
+    vec2 water=waterReflection(normal,outgoing,direction);
+    phase=water.x;samplingPdf=water.y;
+  }
   if (phase<=0.0) return 0.0;
   float distance=traceInterior(p,direction);
   vec3 opening=p+direction*distance;
@@ -233,13 +273,14 @@ float pathRadiance(vec3 p,vec3 direction) {
         bool cap=abs(hit.z)>=uLength*0.5-0.001;
         bool river=!cap && !windowAt(atan(hit.y,hit.x)) && riverDistance(groundCoordinates(hit))<0.035;
         if (river) {
-          // Deep, absorbing water: the transmitted branch is absorbed below the
-          // surface. The reflected branch follows unpolarized Fresnel optics.
-          float c=abs(dot(normal,direction)),eta=1.333;
-          float ct=sqrt(1.0-(1.0-c*c)/(eta*eta));
-          float rs=(c-eta*ct)/(c+eta*ct),rp=(eta*c-ct)/(eta*c+ct);
-          weight*=0.5*(rs*rs+rp*rp);
-          direction=reflect(direction,normal);p=hit+direction*(EPS*4.0);neeReachable=false;
+          vec3 outgoing=-direction;
+          p=hit+normal*(EPS*4.0);
+          radiance+=weight*directLight(p,normal,outgoing,-2,1.0);
+          vec3 next=waterSample(normal,outgoing);
+          vec2 water=waterReflection(normal,outgoing,next);
+          if(water.y<=0.0) break;
+          weight*=water.x/water.y;
+          direction=next;lastPdf=water.y;neeReachable=true;
           continue;
         }
         float albedo=materialSpectrum(surfaceAlbedo(hit,normal));

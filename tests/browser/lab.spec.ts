@@ -75,6 +75,7 @@ test('updates the habitat, evolves weather, and round-trips an exported experime
   await expect(page.locator('#radius-value')).toContainText('8 km');
   await expect(page.locator('#rotation')).toContainText('2.99 min');
   await page.getByRole('tab',{ name:'display',exact:true }).click();
+  await page.locator('#adaptiveExposure').uncheck();
   const downloadEvent = page.waitForEvent('download');
   await page.getByRole('button',{ name:'Export experiment JSON' }).click();
   const download = await downloadEvent;
@@ -82,12 +83,15 @@ test('updates the habitat, evolves weather, and round-trips an exported experime
   const exported = JSON.parse(await readFile('test-results/experiment.json','utf8'));
   expect(exported.radius).toBe(8);
   expect(exported.paused).toBe(true);
+  expect(exported.adaptiveExposure).toBe(false);
   await page.getByRole('tab',{ name:'habitat',exact:true }).click();
   await page.locator('#radius').fill('2');
   await page.locator('#pressure').fill('500');
   await page.getByRole('tab',{ name:'display',exact:true }).click();
+  await page.locator('#adaptiveExposure').check();
   await page.locator('#import-settings').setInputFiles('test-results/experiment.json');
   await expect(page.locator('#toast')).toContainText('Experiment imported');
+  await expect(page.locator('#adaptiveExposure')).not.toBeChecked();
   await page.getByRole('tab',{ name:'habitat',exact:true }).click();
   await expect(page.locator('#radius-value')).toContainText('8 km');
   await expect(page.locator('#pressure-value')).toContainText('1013.25 hPa');
@@ -111,7 +115,7 @@ test('keeps the experiment usable on a narrow screen', async ({ page }) => {
 });
 
 test('keeps an unlit habitat dark at the same camera exposure',async({page})=>{
-  await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true,solarPower:0,view:'axis'})).toString('base64'));
+  await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true,solarPower:0,view:'axis',adaptiveExposure:false})).toString('base64'));
   await expect(page.locator('#render-state')).toContainText('Path tracing');
   await settleRender(page);
   const dark=await pixels(page);
