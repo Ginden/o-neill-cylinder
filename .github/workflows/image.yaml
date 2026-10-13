@@ -1,0 +1,71 @@
+name: build image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_HOST: oci.wadas.dev
+      REGISTRY_USERNAME: ginden
+      REGISTRY_PASSWORD: ${{ secrets.ADMIN_PACKAGES_RW_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute version metadata
+        id: version
+        run: |
+          set -eu
+          commit_timestamp="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          version="$(date -u -d "${commit_timestamp}" +%Y.%j.%H%M)"
+          created="$(date -u -d "${commit_timestamp}" +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "version=${version}"
+            echo "created=${created}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_HOST }}/${{ github.repository }}
+          labels: |
+            org.opencontainers.image.created=${{ steps.version.outputs.created }}
+            org.opencontainers.image.title=cyllinder-atmosphere
+            org.opencontainers.image.description=Configurable colour-coded map visualiser for CSV and Excel data
+            org.opencontainers.image.licenses=MIT
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: Build and push the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          build-args: |
+            OCI_CREATED=${{ steps.version.outputs.created }}
+            OCI_SOURCE=https://gitea.wadas.dev/${{ github.repository }}
+            OCI_REVISION=${{ github.sha }}
+            OCI_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
