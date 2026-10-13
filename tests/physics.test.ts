@@ -59,9 +59,10 @@ describe('sealed window illumination', () => {
   });
   it('blocks direct sunlight through land and sealed caps but admits it through a window', () => {
     const s = { ...defaults, lightMode:'sun' as const, sunElevation:0, sunAzimuth:90 };
-    expect(directIllumination([0,-3.5,0],s)).toBeGreaterThan(0.8);
-    expect(directIllumination([0,-3.5,0],{ ...s,sunAzimuth:270 })).toBe(0);
+    expect(directIllumination([0,-3.5,0.5],s)).toBeGreaterThan(0.8);
+    expect(directIllumination([0,-3.5,0],s)).toBe(0); // Opaque structural ring.
+    expect(directIllumination([0,-3.5,0.5],{ ...s,sunAzimuth:270 })).toBe(0);
     expect(directIllumination([0,-3.5,11.9],{ ...s,sunElevation:35 })).toBe(0);
-    expect(directIllumination([0,-3.5,0],{ ...s,windowTransmission:0 })).toBe(0);
+    expect(directIllumination([0,-3.5,0.5],{ ...s,windowTransmission:0 })).toBe(0);
   });
 });

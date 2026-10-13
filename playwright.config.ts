@@ -7,6 +7,8 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:5173',
     viewport: { width:1280,height:800 },
+    // SwiftShader verifies physical paths at reduced pixel count; CSS layout is unchanged.
+    deviceScaleFactor:0.25,
     launchOptions: {
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
       args: ['--enable-unsafe-swiftshader','--use-angle=swiftshader']

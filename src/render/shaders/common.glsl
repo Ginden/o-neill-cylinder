@@ -1,4 +1,6 @@
 const float PI = 3.141592653589793;
+float wavelength;
+float spectralBin;
 uniform float uRadius;
 uniform float uLength;
 uniform float uGravity;
@@ -9,10 +11,20 @@ uniform float uWindowFraction;
 uniform float uWindowTransmission;
 uniform float uTerrainHeight;
 uniform float uAerosol;
-uniform float uAerosolG;
+uniform float uAerosolScale;
+uniform sampler2D uAerosolPhase;
+uniform sampler2D uCloudPhase;
 uniform float uSolarPower;
-uniform vec3 uLights[3];
-uniform int uLightCount;
+uniform vec3 uSun;
+uniform vec3 uMirrorCenter[3];
+uniform vec3 uMirrorNormal[3];
+uniform vec3 uMirrorAcross[3];
+uniform vec3 uMirrorAlong[3];
+uniform vec2 uMirrorSize;
+uniform int uMirrorCount;
+uniform float uMirrorReflectivity;
+uniform float uAirMajorant;
+uniform highp sampler3D uCloudMajorant;
 uniform bool uAtmosphere;
 uniform bool uClouds;
 uniform highp sampler3D uWeather;
@@ -44,30 +56,6 @@ vec4 weatherAt(vec3 p) {
   if (!uClouds || uPressure <= 0.0) return vec4(0.0);
   vec3 uv = vec3(p.xy / (2.0 * uRadius) + 0.5, p.z / uLength + 0.5);
   return texture(uWeather, uv);
-}
-
-float cloudExtinction(vec3 p) {
-  // Qext=2, 10 micron effective droplet radius: 150 m²/kg of liquid water.
-  return weatherAt(p).r * 150000.0;
-}
-
-vec3 extinction(vec3 p) {
-  if (!uAtmosphere || uPressure <= 0.0) return vec3(0.0);
-  return (vec3(0.005802, 0.013558, 0.0331) + vec3(uAerosol)) * airDensity(p)
-    + vec3(cloudExtinction(p));
-}
-
-vec3 sunlight(vec3 p, vec3 d) {
-  float distance = boundaryDistance(p, d);
-  vec3 entry = p + d * distance;
-  if (abs(entry.z) >= uLength * 0.5 - 0.0001 || !windowAt(atan(entry.y, entry.x))) return vec3(0.0);
-  vec3 opticalDepth = vec3(0.0);
-  // Midpoint quadrature on the path to the actual transmitting window.
-  for (int j = 0; j < 4; j++) {
-    vec3 q = p + d * distance * (float(j) + 0.5) / 4.0;
-    opticalDepth += extinction(q) * distance / 4.0;
-  }
-  return vec3(1.35, 1.27, 1.15) * uSolarPower * uWindowTransmission * exp(-opticalDepth);
 }
 
 float hash(vec2 p) {

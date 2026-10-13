@@ -27,12 +27,14 @@ export const sliders: Record<string, SliderSpec[]> = {
   ],
   light: [
     { key: 'solarPower', label: 'Solar irradiance', min: 0, max: 2, step: 0.01, unit: '×' },
-    { key: 'windowTransmission', label: 'Window transmission', min: 0, max: 1, step: 0.01, unit: '%', scale: 100 },
-    { key: 'mirrorTilt', label: 'Mirror beam tilt', min: -35, max: 35, step: 1, unit: '°', hint: 'Steers three idealized reflected beams. Detailed mirror surfaces are not modeled.' },
-    { key: 'sunAzimuth', label: 'Direct sun azimuth', min: 0, max: 360, step: 1, unit: '°' },
-    { key: 'sunElevation', label: 'Beam angle along axis', min: -35, max: 35, step: 1, unit: '°' },
-    { key: 'aerosol', label: 'Aerosol extinction', min: 0, max: 0.08, step: 0.001, unit: '/km', hint: 'At reference air density. Aerosols scatter light forward and soften distant land.' },
-    { key: 'aerosolG', label: 'Aerosol forward scattering', min: 0, max: 0.95, step: 0.01, unit: 'g' }
+    { key: 'windowTransmission', label: 'Glass bulk transmission', min: 0, max: 1, step: 0.01, unit: '%', scale: 100, hint: 'Absorption multiplier. Fresnel reflection is calculated separately for both interfaces, with wavelength-dependent BK7 refractive index.' },
+    { key: 'mirrorTilt', label: 'Mirror deployment offset', min: -35, max: 35, step: 1, unit: '°', hint: 'Three finite panels are hinged at the −Z end of the windows. Zero deploys them at 45°. Reflected light follows their surface normals.' },
+    { key: 'mirrorReflectivity', label: 'Mirror reflectivity', min: 0, max: 1, step: 0.01, unit: '%', scale: 100 },
+    { key: 'sunAzimuth', label: 'Sun azimuth', min: 0, max: 360, step: 1, unit: '°' },
+    { key: 'sunElevation', label: 'Sun elevation toward +Z', min: -90, max: 90, step: 1, unit: '°', hint: '90° places the Sun along the cylinder axis. Solar diameter is 0.533° at 1 au; its finite disk produces penumbras.' },
+    { key: 'aerosol', label: 'Aerosol extinction', min: 0, max: 0.08, step: 0.001, unit: '/km', hint: 'At reference air density and 550 nm. Particle size sets wavelength-dependent scattering and absorption.' },
+    { key: 'aerosolRadius', label: 'Aerosol effective radius', min: 0.03, max: 1, step: 0.01, unit: 'µm', hint: 'Mie scattering for a lognormal sphere population (log width 0.35, refractive index 1.50 + 0.01i). Extinction is specified at 550 nm.' },
+    { key: 'cloudRadius', label: 'Cloud effective radius', min: 3, max: 25, step: 1, unit: 'µm', hint: 'Mie scattering from liquid-water spheres (n = 1.333 + 10⁻⁹i); lognormal width 0.35. Extinction follows the modeled liquid-water mass.' }
   ],
   weather: [
     { key: 'humidity', label: 'Initial wall humidity', min: 0, max: 100, step: 1, unit: '%', hint: 'Initially mixed vapor can condense in colder central air. Changes restart the weather.' },
@@ -43,7 +45,7 @@ export const sliders: Record<string, SliderSpec[]> = {
     { key: 'seed', label: 'Weather seed', min: 1, max: 999, step: 1, unit: '' }
   ],
   display: [
-    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Each stop doubles brightness. Use a fixed value for comparisons; night stars require much higher exposure.' }
+    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Each stop doubles brightness. Use a fixed value for comparisons; exposure changes the photograph, not physical luminance or human dark adaptation.' }
   ]
 };
 
@@ -66,9 +68,9 @@ export function renderControls(settings: Settings) {
     <select id="preset"><option value="Custom">Custom experiment</option>${Object.keys(presets).map(name => `<option ${name === 'Clear daylight' ? 'selected' : ''}>${name}</option>`).join('')}</select>
     <div class="tabs" role="tablist" aria-label="Parameter categories">${['habitat','light','weather','display'].map((tab,i) => `<button role="tab" id="tab-${tab}" aria-controls="pane-${tab}" aria-selected="${i === 0}" data-tab="${tab}" tabindex="${i === 0 ? 0 : -1}">${tab}</button>`).join('')}</div>
     <div class="panes">${Object.entries(sliders).map(([group,specs],i) => `<section role="tabpanel" id="pane-${group}" aria-labelledby="tab-${group}" ${i ? 'hidden' : ''}>
-      ${group === 'light' ? `<label class="select-label" for="lightMode">Illumination</label><select id="lightMode"><option value="mirrors">Three reflected sunlight beams</option><option value="sun">Direct sunlight through windows</option></select>` : ''}
+      ${group === 'light' ? `<label class="select-label" for="lightMode">Illumination</label><select id="lightMode"><option value="mirrors">Sun + exterior mirror panels</option><option value="sun">Sun · mirrors removed</option></select>` : ''}
       ${group === 'weather' ? `<label class="toggle"><span>Simulate clouds</span><input id="clouds" type="checkbox" ${settings.clouds ? 'checked' : ''}/></label><div class="weather-note">A coarse moist-convection model. Clouds emerge through condensation; water and latent heat are exchanged together.</div>` : ''}
-      ${group === 'display' ? `<label class="toggle"><span>Atmospheric scattering</span><input id="atmosphere" type="checkbox" ${settings.atmosphere ? 'checked' : ''}/></label><label class="select-label" for="quality">Render quality</label><select id="quality"><option value="fast">Fast · 28 ray samples</option><option value="balanced">Balanced · 56 ray samples</option><option value="high">High · 112 ray samples</option></select><label class="select-label" for="diagnostic">View layer</label><select id="diagnostic"><option value="natural">Natural light</option><option value="transmission">RGB transmittance</option><option value="density">Air column</option><option value="cloud">Liquid-water column</option></select>` : ''}
+      ${group === 'display' ? `<label class="toggle"><span>Atmospheric scattering</span><input id="atmosphere" type="checkbox" ${settings.atmosphere ? 'checked' : ''}/></label><label class="select-label" for="quality">Image resolution</label><select id="quality"><option value="fast">Fast · 45% resolution</option><option value="balanced">Balanced · 70% resolution</option><option value="high">High · full resolution</option></select><p class="hint">All qualities trace the same physical light paths. Hold the camera still to accumulate samples. Pause clouds for a converged still image.</p><label class="select-label" for="diagnostic">View layer</label><select id="diagnostic"><option value="natural">Natural light</option><option value="transmission">RGB transmittance</option><option value="density">Air column</option><option value="cloud">Liquid-water column</option></select>` : ''}
       ${specs.map(spec => slider(spec,settings)).join('')}
       ${group === 'weather' ? `<div class="weather-stats"><div><span>Cloud volume</span><strong id="cloud-fraction">—</strong></div><div><span>Peak wind</span><strong id="max-wind">—</strong></div><div><span>Liquid water</span><strong id="cloud-mass">—</strong></div></div><button class="secondary wide" id="reset-weather">Restart weather</button>` : ''}
       ${group === 'display' ? `<button class="secondary wide" id="export-settings">Export experiment JSON</button><label class="secondary wide import-label" for="import-settings">Import experiment JSON<input id="import-settings" type="file" accept="application/json,.json"/></label>` : ''}

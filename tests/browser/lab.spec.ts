@@ -2,6 +2,11 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
+test.afterEach(async({page})=>{
+  const error=await page.locator('#scene').evaluate((canvas:HTMLCanvasElement)=>canvas.getContext('webgl2')!.getError());
+  expect(error).toBe(0);
+});
+
 async function settleRender(page: Page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
@@ -27,8 +32,9 @@ test('renders a varied landscape without shader errors and exposes physical comp
   });
   // Fast rendering makes this a shader correctness check even on software graphics.
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
-  await expect(page.locator('#render-state')).toContainText('Live light transport');
+  await expect(page.locator('#render-state')).toContainText('Path tracing');
   await settleRender(page);
+  expect(errors).toEqual([]);
   const natural = await pixels(page);
   expect(natural.max-natural.min).toBeGreaterThan(70);
   expect(natural.mean).toBeGreaterThan(10);
@@ -57,7 +63,7 @@ test('renders a varied landscape without shader errors and exposes physical comp
 
 test('updates the habitat, evolves weather, and round-trips an exported experiment', async ({ page }) => {
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',timeScale:300,humidity:78,clouds:true })).toString('base64'));
-  await expect(page.locator('#render-state')).toContainText('Live light transport');
+  await expect(page.locator('#render-state')).toContainText('Path tracing');
   await page.getByRole('tab',{ name:'weather',exact:true }).click();
   await expect(page.locator('#cloud-fraction')).not.toHaveText('—');
   await expect(page.locator('#sim-time')).not.toHaveText('00:00:00');
@@ -95,11 +101,20 @@ test('updates the habitat, evolves weather, and round-trips an exported experime
 test('keeps the experiment usable on a narrow screen', async ({ page }) => {
   await page.setViewportSize({ width:390,height:844 });
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
-  await expect(page.locator('#render-state')).toContainText('Live light transport');
+  await expect(page.locator('#render-state')).toContainText('Path tracing');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path:'test-results/mobile.png',fullPage:true });
   await page.getByRole('tab',{ name:'light',exact:true }).click();
   await page.locator('#lightMode').selectOption('sun');
   await expect(page.locator('#lightMode')).toHaveValue('sun');
+});
+
+test('keeps an unlit habitat dark at the same camera exposure',async({page})=>{
+  await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true,solarPower:0,view:'axis'})).toString('base64'));
+  await expect(page.locator('#render-state')).toContainText('Path tracing');
+  await settleRender(page);
+  const dark=await pixels(page);
+  expect(dark.mean).toBeLessThan(1);
+  await expect(page.locator('#luminance')).toContainText('cd/m²');
 });

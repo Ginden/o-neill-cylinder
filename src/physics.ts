@@ -1,10 +1,21 @@
 import type { Settings } from './settings';
+import { dot, glassPlate, intersectMirror, mirrorGeometry, reflect, sunDirection, windowOpening } from './optics';
 
 export const AIR_GAS_CONSTANT = 287.05;
 export const HEAT_CAPACITY = 1005;
 export const LATENT_HEAT = 2.5e6;
 export const EARTH_GRAVITY = 9.80665;
 export const RAYLEIGH_PER_KM = [0.005802, 0.013558, 0.0331] as const;
+
+/** Wavelength-dependent dry-air coefficient, at 1013.25 hPa and 288.15 K. */
+export function rayleighPerKm(wavelengthNm:number) {
+  const index=(lambda:number)=>{
+    const sigma2=1/(lambda/1000)**2;
+    const n=1+1e-8*(8342.13+2406030/(130-sigma2)+15997/(38.9-sigma2));
+    return (n*n-1)/(n*n+2);
+  };
+  return 0.013558*(550/wavelengthNm)**4*(index(wavelengthNm)/index(550))**2;
+}
 
 export function angularVelocity(s: Pick<Settings, 'gravity' | 'radius'>): number {
   return Math.sqrt(s.gravity * EARTH_GRAVITY / (s.radius * 1000));
@@ -60,11 +71,8 @@ export function isWindow(theta: number, fraction: number): boolean {
 }
 
 export function lightDirections(s: Settings): [number, number, number][] {
-  const elevation = s.sunElevation * Math.PI / 180;
-  const angles = s.lightMode === 'sun'
-    ? [s.sunAzimuth * Math.PI / 180]
-    : [-Math.PI / 6, Math.PI / 2, 7 * Math.PI / 6].map(a => a + s.mirrorTilt * Math.PI / 180);
-  return angles.map(a => [Math.cos(a) * Math.cos(elevation), Math.sin(a) * Math.cos(elevation), Math.sin(elevation)]);
+  const sun = sunDirection(s);
+  return s.lightMode === 'sun' ? [sun] : [sun, ...mirrorGeometry(s).map(panel => reflect(sun,panel.normal))];
 }
 
 /** Distance from an interior point to the sidewall or sealed endcap, in km. */
@@ -79,17 +87,29 @@ export function boundaryDistance(p: readonly number[], d: readonly number[], rad
 
 export function directIllumination(p: readonly number[], s: Settings) {
   let sum = 0;
-  for (const d of lightDirections(s)) {
+  const panels = s.lightMode === 'mirrors' ? mirrorGeometry(s) : [];
+  for (const [source,d] of lightDirections(s).entries()) {
     const t = boundaryDistance(p, d, s.radius, s.length);
     const x = p[0] + d[0] * t;
     const y = p[1] + d[1] * t;
     const z = p[2] + d[2] * t;
-    if (Math.abs(z) < s.length / 2 - 1e-5 && isWindow(Math.atan2(y, x), s.windowFraction)) {
+    if (windowOpening([x,y,z],s)) {
+      const exit = [x+d[0]*1e-4,y+d[1]*1e-4,z+d[2]*1e-4];
+      const hits = panels.map(panel=>intersectMirror(exit,d,panel));
+      let throughput = 1;
+      if (source === 0 && hits.some(Number.isFinite)) continue;
+      if (source > 0) {
+        const index = source-1, panel = panels[index];
+        if (!Number.isFinite(hits[index]) || hits[index]!==Math.min(...hits) || dot(d,panel.normal)<=0) continue;
+        throughput = s.mirrorReflectivity;
+      }
+      const cosine = (x*d[0]+y*d[1])/s.radius;
+      throughput *= glassPlate(cosine,s.windowTransmission).transmission;
       const r = Math.hypot(p[0], p[1]);
-      sum += Math.max(0, -(p[0] * d[0] + p[1] * d[1]) / Math.max(r, 0.001));
+      sum += throughput*Math.max(0, -(p[0] * d[0] + p[1] * d[1]) / Math.max(r, 0.001));
     }
   }
-  return sum * s.solarPower * s.windowTransmission;
+  return sum * s.solarPower;
 }
 
 export function seededRandom(seed: number) {

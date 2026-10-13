@@ -7,13 +7,15 @@ export interface Settings {
   lapseRate: number;
   humidity: number;
   aerosol: number;
-  aerosolG: number;
+  aerosolRadius: number;
+  cloudRadius: number;
   windowFraction: number;
   windowTransmission: number;
   lightMode: 'mirrors' | 'sun';
   sunAzimuth: number;
   sunElevation: number;
   mirrorTilt: number;
+  mirrorReflectivity: number;
   solarPower: number;
   exposure: number;
   terrainHeight: number;
@@ -33,10 +35,10 @@ export interface Settings {
 export const defaults: Settings = {
   radius: 4, length: 24, gravity: 1, pressure: 1013.25,
   temperature: 20, lapseRate: 6.5, humidity: 45,
-  aerosol: 0.006, aerosolG: 0.76,
+  aerosol: 0.006, aerosolRadius: 0.15, cloudRadius: 10,
   windowFraction: 0.45, windowTransmission: 0.9,
-  lightMode: 'mirrors', sunAzimuth: 90, sunElevation: 8,
-  mirrorTilt: 0, solarPower: 1, exposure: 2.2,
+  lightMode: 'mirrors', sunAzimuth: 90, sunElevation: 90,
+  mirrorTilt: 0, mirrorReflectivity: 0.9, solarPower: 1, exposure: 2.2,
   terrainHeight: 0.16, surfaceHeating: 0.018, evaporation: 0.000008,
   wind: 3, timeScale: 120, clouds: false, atmosphere: true, paused: false,
   diagnostic: 'natural', quality: 'balanced', view: 'valley', seed: 42
@@ -48,7 +50,7 @@ export const presets: Record<string, Partial<Settings>> = {
   'Hazy habitat': { ...defaults, aerosol: 0.035, humidity: 65, clouds: false },
   'Small cylinder': { ...defaults, radius: 1, length: 8, terrainHeight: 0.035, clouds: false },
   'Giant cylinder': { ...defaults, radius: 12, length: 60, terrainHeight: 0.3, clouds: false },
-  'Night': { ...defaults, solarPower: 0, surfaceHeating: 0, exposure: 1024, clouds: false },
+  'Night': { ...defaults, solarPower: 0, surfaceHeating: 0, clouds: false },
   'Vacuum comparison': { ...defaults, pressure: 0, atmosphere: false, clouds: false }
 };
 
@@ -56,5 +58,5 @@ export const weatherKeys: (keyof Settings)[] = [
   'radius', 'length', 'gravity', 'pressure', 'temperature', 'lapseRate',
   'humidity', 'surfaceHeating', 'evaporation', 'wind', 'seed', 'solarPower',
   'lightMode', 'sunAzimuth', 'sunElevation', 'mirrorTilt', 'windowFraction',
-  'windowTransmission'
+  'windowTransmission', 'mirrorReflectivity'
 ];

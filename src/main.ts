@@ -1,7 +1,7 @@
 import './style.css';
 import { defaults, presets, weatherKeys } from './settings';
 import type { Settings } from './settings';
-import { angularVelocity, backgroundAt, boundaryDistance, RAYLEIGH_PER_KM } from './physics';
+import { angularVelocity, backgroundAt, boundaryDistance } from './physics';
 import { HabitatRenderer } from './render/renderer';
 import { Navigation } from './render/navigation';
 import { WeatherClient } from './weather/client';
@@ -172,6 +172,8 @@ function start() {
   });
 
   function updateReadouts() {
+    const luminance=settings.diagnostic==='natural' ? renderer.luminance() : null;
+    element('luminance').textContent=luminance===null ? 'Diagnostic layer' : `${luminance>=1 ? luminance.toFixed(1) : luminance.toExponential(1)} cd/m²`;
     const omega = angularVelocity(settings);
     element('rotation').textContent = omega > 0 ? `${(2*Math.PI/omega/60).toFixed(2)} min / turn` : 'Not rotating';
     element('axis-pressure').textContent = `${(backgroundAt(0,settings).pressure/100).toFixed(0)} hPa`;
@@ -185,14 +187,14 @@ function start() {
       const b = backgroundAt(radius,settings);
       column += b.pressure / 101325 * 288.15 / b.temperature * distance / 24;
     }
-    const transmission = settings.atmosphere ? Math.exp(-(RAYLEIGH_PER_KM[2]+settings.aerosol)*column) : 1;
+    const transmission = settings.atmosphere ? Math.exp(-renderer.clearAirBlueExtinction*column) : 1;
     element('sightline').textContent = `${distance.toFixed(1)} km · B ${(transmission*100).toFixed(0)}%`;
     const seconds = Math.floor(weather.stats.seconds);
     element('sim-time').textContent = [Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v => String(v).padStart(2,'0')).join(':');
     element('cloud-fraction').textContent = `${(weather.stats.cloudFraction*100).toFixed(1)}%`;
     element('max-wind').textContent = `${weather.stats.maxWind.toFixed(1)} m/s`;
     element('cloud-mass').textContent = `${(weather.stats.cloudMass/1e6).toFixed(1)} kt`;
-    element('render-state').textContent = `${settings.diagnostic === 'natural' ? 'Live light transport' : 'Diagnostic view'} · ${Math.round(fps)} fps`;
+    element('render-state').textContent = `${settings.diagnostic === 'natural' ? `Path tracing · ${renderer.samples} samples` : 'Diagnostic view'} · ${Math.round(fps)} fps`;
   }
 
   refresh([]);
