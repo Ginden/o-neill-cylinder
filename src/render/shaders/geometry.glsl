@@ -11,21 +11,23 @@ bool windowOpening(vec3 p) {
   return margin*(2.0*PI/3.0)*uRadius>0.005 && ring>0.005;
 }
 
-float glassIndexAtWavelength() {
-  float l2=pow(wavelength*0.001,2.0);
+vec4 glassIndexAtWavelength() {
+  vec4 l2=wavelength*wavelength*1e-6;
   return sqrt(1.0+1.03961212*l2/(l2-0.00600069867)+0.231792344*l2/(l2-0.0200179144)+1.01046945*l2/(l2-103.560653));
 }
-vec2 glassPlate(float cosine) {
+// Thin-plate reflectance and transmittance at each path wavelength. A parallel
+// plate does not bend rays, so all wavelengths keep one direction.
+void glassPlate(float cosine,out vec4 reflectance,out vec4 transmittance) {
   float c = clamp(abs(cosine),0.0,1.0);
-  float eta=glassIndex;
-  float ct = sqrt(1.0-(1.0-c*c)/(eta*eta));
-  float rs = (c-eta*ct)/(c+eta*ct);
-  float rp = (eta*c-ct)/(eta*c+ct);
-  float f = 0.5*(rs*rs+rp*rp);
-  float attenuation=pow(uWindowTransmission,1.0/ct);
-  float denominator=max(1e-8,1.0-f*f*attenuation*attenuation);
-  return vec2(f+(1.0-f)*(1.0-f)*f*attenuation*attenuation/denominator,
-    (1.0-f)*(1.0-f)*attenuation/denominator);
+  vec4 eta=glassIndex;
+  vec4 ct = sqrt(1.0-(1.0-c*c)/(eta*eta));
+  vec4 rs = (c-eta*ct)/(c+eta*ct);
+  vec4 rp = (eta*c-ct)/(eta*c+ct);
+  vec4 f = 0.5*(rs*rs+rp*rp);
+  vec4 attenuation=pow(vec4(uWindowTransmission),1.0/ct);
+  vec4 denominator=max(vec4(1e-8),1.0-f*f*attenuation*attenuation);
+  reflectance=f+(1.0-f)*(1.0-f)*f*attenuation*attenuation/denominator;
+  transmittance=(1.0-f)*(1.0-f)*attenuation/denominator;
 }
 
 // Bound on the baked terrain slope |∇h|. A heightfield cannot rise toward a ray

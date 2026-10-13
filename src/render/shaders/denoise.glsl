@@ -62,7 +62,7 @@ void main() {
   float mediumDepth=texelFetch(uGuideMedium,center,0).r;
   float mediumTolerance=max(mediumDepth,0.001)*uStride;
   // Luminance uses all edge-stopping weights. Chromaticity uses only geometric
-  // ones: each sample carries one wavelength, so luminance stopping would favor
+  // ones: each sample carries only four wavelengths, so luminance stopping would favor
   // neighbors that sampled similar wavelengths and keep color speckle. The
   // demodulated illumination and the haze both vary slowly in color.
   vec4 surfaceSum=vec4(0.0),hazeSum=vec4(0.0),surfaceWide=vec4(0.0),hazeWide=vec4(0.0);

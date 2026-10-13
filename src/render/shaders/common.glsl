@@ -1,13 +1,18 @@
 const float PI = 3.141592653589793;
 const float SECTOR_ANGLE = 2.0943951023931953;
-float wavelength;
-float spectralBin;
-float glassIndex;
-float sigmaRayleigh;
-vec2 sigmaAerosol;
-vec2 sigmaCloud;
-float solarSpectrum;
-float lampSpectrum;
+// Hero wavelength sampling: each path carries four wavelengths. Component x is
+// the hero, whose densities make sampling decisions; y, z and w are rotated by
+// 100, 200 and 300 nm. Every spectral quantity below is per component.
+vec4 wavelength;
+vec4 spectralBin;
+vec4 glassIndex;
+vec4 sigmaRayleigh;
+vec4 aerosolExtinction;
+vec4 aerosolScattering;
+vec4 cloudExtinction;
+vec4 cloudScattering;
+vec4 solarSpectrum;
+vec4 lampSpectrum;
 uniform float uRadius;
 uniform float uLength;
 uniform float uGravity;

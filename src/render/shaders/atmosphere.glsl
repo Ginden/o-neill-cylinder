@@ -17,10 +17,12 @@ void main() {
   rngState=(pixel.x+pixel.y*uint(uResolution.x))*9781u+0x68bc21ebu;
   int offset=int(randomValue()*41.0);
   rngState+=uint(uSample)*6271u;
-  // Each pixel covers all wavelength strata every 41 samples. A stable random
+  // Each pixel covers all hero strata every 41 samples. A stable random
   // offset and coprime permutation preserve the uniform spectral estimator.
+  // Three companions, rotated by 100 nm, are each uniform on 380–780 nm too.
   int stratum=(uSample%41*17+offset)%41;
-  wavelength=380.0+(float(stratum)+randomValue())*(400.0/41.0);
+  float hero=(float(stratum)+randomValue())*(400.0/41.0);
+  wavelength=380.0+mod(hero+vec4(0.0,100.0,200.0,300.0),400.0);
   spectralBin=(wavelength-380.0)/10.0;
   prepareWavelength();
   vec2 jitter=uDiagnostic==0 ? vec2(randomValue(),randomValue())-0.5 : vec2(0.0);
@@ -29,9 +31,11 @@ void main() {
   vec3 ray=normalize((uCameraMatrix*vec4(normalize(view.xyz/view.w),0.0)).xyz);
   vec3 color,haze=vec3(0.0);
   if (uDiagnostic==0) {
-    vec3 xyz=matchingXYZ()*(400.0*683.0/uReferenceIlluminance);
-    vec2 radiance=pathRadiance(uCameraPosition,ray);
-    color=xyz*radiance.x;haze=xyz*radiance.y;
+    // Four wavelengths, each with density 1/400 nm, share one estimate.
+    float scale=100.0*683.0/uReferenceIlluminance;
+    vec4 hazeRadiance;
+    vec4 radiance=pathRadiance(uCameraPosition,ray,hazeRadiance);
+    color=spectralXYZ(radiance)*scale;haze=spectralXYZ(hazeRadiance)*scale;
     // A numerical failure in one sample must not poison the whole history.
     if (any(isnan(color)) || any(isinf(color))) {color=vec3(0.0);haze=vec3(0.0);}
   } else {
@@ -39,10 +43,10 @@ void main() {
     vec3 opticalDepth=vec3(0.0);
     float densityIntegral=0.0,liquidIntegral=0.0;
     vec3 airBeta=vec3(0.0),cloudBeta=vec3(0.0);
-    if(uAtmosphere && uPressure>0.0) for(int channel=0;channel<3;channel++) {
-      wavelength=channel==0 ? 680.0 : channel==1 ? 550.0 : 440.0;
+    if(uAtmosphere && uPressure>0.0) {
+      wavelength=vec4(680.0,550.0,440.0,550.0);
       spectralBin=(wavelength-380.0)/10.0;prepareWavelength();
-      airBeta[channel]=sigmaRayleigh+sigmaAerosol.x;cloudBeta[channel]=sigmaCloud.x;
+      airBeta=(sigmaRayleigh+aerosolExtinction).xyz;cloudBeta=cloudExtinction.xyz;
     }
     for (int i=0;i<128;i++) {
       if (i>=uSteps) break;

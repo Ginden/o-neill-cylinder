@@ -1,7 +1,7 @@
 uniform vec2 uPreviewAtlasSize;
 out vec4 outColor;
 void main() {
-  wavelength=550.0;spectralBin=17.0;glassIndex=glassIndexAtWavelength();
+  wavelength=vec4(550.0);spectralBin=vec4(17.0);glassIndex=glassIndexAtWavelength();
   vec2 uv=gl_FragCoord.xy/uPreviewAtlasSize;
   float theta=uv.x*2.0*PI+PI*0.5;
   float height=windowAt(theta) ? 0.0 : texture(uTerrain,uv).r;
@@ -22,7 +22,9 @@ void main() {
     if (exterior==0.0 || dot(outsideDirection,uSun)<0.999999) continue;
     float column=0.0;
     if (uAtmosphere) for(int i=0;i<8;i++) column+=airDensity(p+direction*distance*(float(i)+0.5)/8.0)*distance/8.0;
-    light+=cosine*exterior*glassPlate(dot(normalize(exit.xy),direction.xy)).y*exp(-(0.013558+uAerosol)*column);
+    vec4 reflectance,transmittance;
+    glassPlate(dot(normalize(exit.xy),direction.xy),reflectance,transmittance);
+    light+=cosine*exterior*transmittance.x*exp(-(0.013558+uAerosol)*column);
   }
   outColor=vec4(vec3(light*uSolarPower),1.0);
 }
