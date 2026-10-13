@@ -1,9 +1,12 @@
 import {openIsolatedPage} from './isolated';
+import {canvasPixels,captureErrors,waitForScene} from './canvas';
 import {expect,test} from '@playwright/test';
 import {writeFile} from 'node:fs/promises';
 
 test('uses raster navigation during interaction and resumes static accumulation',async({page})=>{
+  const errors=captureErrors(page);
   await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true})).toString('base64'));
+  await waitForScene(page);
   const canvas=page.locator('#scene');
   await expect.poll(()=>canvas.getAttribute('data-mode')).toBe('path');
   await expect.poll(async()=>Number(await canvas.getAttribute('data-samples'))).toBeGreaterThan(3);
@@ -17,18 +20,12 @@ test('uses raster navigation during interaction and resumes static accumulation'
     let frames=0;function frame(){if(++frames>=6) resolve();else requestAnimationFrame(frame);}requestAnimationFrame(frame);
   }));
   expect(Number(await canvas.getAttribute('data-samples'))).toBe(during);
-  const range=await canvas.evaluate((node:HTMLCanvasElement)=>{
-    const gl=node.getContext('webgl2')!,pixels=new Uint8Array(node.width*node.height*4);
-    gl.readPixels(0,0,node.width,node.height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
-    let lowest=255,highest=0;
-    for(let i=0;i<pixels.length;i+=4) {lowest=Math.min(lowest,pixels[i]);highest=Math.max(highest,pixels[i]);}
-    return highest-lowest;
-  });
-  expect(range).toBeGreaterThan(50);
+  const preview=await canvasPixels(page);
+  expect(preview.max-preview.min).toBeGreaterThan(50);
   await page.mouse.up();
   await expect.poll(()=>canvas.getAttribute('data-mode')).toBe('path');
   await expect.poll(async()=>Number(await canvas.getAttribute('data-samples'))).toBeGreaterThan(during+3);
-  expect(await canvas.evaluate((node:HTMLCanvasElement)=>node.getContext('webgl2')!.getError())).toBe(0);
+  expect(errors).toEqual([]);
 });
 
 test('denoises the static display without changing camera history or light-meter data',async({page})=>{

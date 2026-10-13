@@ -66,35 +66,49 @@ export const SPECTRAL_BINS=41;
  * between 10 nm nodes. The sampled wavelength itself is uniform on 380–780 nm.
  */
 export function particleOptics(effectiveRadius:number,logWidth:number,index:Complex) {
+  return summarizeOptics(particleOpticsRows(effectiveRadius,logWidth,index,0,SPECTRAL_BINS));
+}
+
+export interface ParticleOptics {
+  data: Float32Array;
+  maximumExtinction: number;
+  greenExtinction: number;
+}
+
+export function summarizeOptics(data:Float32Array):ParticleOptics {
+  let maximumExtinction=0;
+  for(let bin=0;bin<SPECTRAL_BINS;bin++) maximumExtinction=Math.max(maximumExtinction,data[bin*PHASE_TABLE_SIZE*4+2]);
+  return {data,maximumExtinction,greenExtinction:data[17*PHASE_TABLE_SIZE*4+2]};
+}
+
+/** Wavelength rows are independent, so workers can calculate disjoint ranges. */
+export function particleOpticsRows(effectiveRadius:number,logWidth:number,index:Complex,start:number,end:number) {
   const particles=Array.from({length:15},(_,i)=>{
     const z=-3.5+7*(i+0.5)/15;
     const radius=effectiveRadius*Math.exp(-2.5*logWidth*logWidth+z*logWidth);
     return {radius,weight:Math.exp(-z*z/2)};
   });
   const massMoment=particles.reduce((sum,p)=>sum+p.weight*p.radius**3,0);
-  const data=new Float32Array(PHASE_TABLE_SIZE*SPECTRAL_BINS*4);
-  let maximumExtinction=0;
-  for (let bin=0;bin<SPECTRAL_BINS;bin++) {
+  const data=new Float32Array(PHASE_TABLE_SIZE*(end-start)*4);
+  for (let bin=start;bin<end;bin++) {
     const coefficients=particles.map(p=>mieSphere(p.radius,(380+10*bin)/1000,index));
     const scatteringArea=particles.reduce((sum,p,i)=>sum+p.weight*p.radius*p.radius*coefficients[i].qScattering,0);
     const extinctionArea=particles.reduce((sum,p,i)=>sum+p.weight*p.radius*p.radius*coefficients[i].qExtinction,0);
     const extinction=750000*extinctionArea/massMoment,scattering=750000*scatteringArea/massMoment;
-    maximumExtinction=Math.max(maximumExtinction,extinction);
     let integral=0,previous=0;
     for (let j=0;j<PHASE_TABLE_SIZE;j++) {
       const u=j/(PHASE_TABLE_SIZE-1),theta=Math.PI*u*u;
       const phase=particles.reduce((sum,p,i)=>sum+p.weight*p.radius*p.radius*coefficients[i].qScattering*coefficients[i].phase(Math.cos(theta)),0)/scatteringArea;
-      const offset=(j+bin*PHASE_TABLE_SIZE)*4;
+      const offset=(j+(bin-start)*PHASE_TABLE_SIZE)*4;
       data[offset]=phase;data[offset+2]=extinction;data[offset+3]=scattering;
       const integrand=phase*2*Math.PI*Math.sin(theta)*2*Math.PI*u;
       if (j>0) integral+=(integrand+previous)/2/(PHASE_TABLE_SIZE-1);
       data[offset+1]=integral;previous=integrand;
     }
     for (let j=0;j<PHASE_TABLE_SIZE;j++) {
-      const offset=(j+bin*PHASE_TABLE_SIZE)*4;
+      const offset=(j+(bin-start)*PHASE_TABLE_SIZE)*4;
       data[offset]/=integral;data[offset+1]/=integral;
     }
   }
-  const greenExtinction=data[(17*PHASE_TABLE_SIZE)*4+2];
-  return {data,maximumExtinction,greenExtinction};
+  return data;
 }

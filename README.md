@@ -6,14 +6,14 @@ A progressive spectral path tracer and coarse moist-convection experiment inside
 
 ## Run
 
-Requires Node.js 24+ and a browser with WebGL 2 and floating-point render targets (`EXT_color_buffer_float`).
+Requires Node.js 24+ and a modern browser with Web Workers, OffscreenCanvas, WebGL 2 and floating-point render targets (`EXT_color_buffer_float`).
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Open the printed local address (normally <http://127.0.0.1:5173/>). Dragging, flying, scrolling and viewpoint changes use a rasterized navigation preview; 200 ms after movement stops, the spectral path tracer resumes. **Denoise display** is enabled by default and filters only the displayed image: surface light is filtered with its reflectance divided out, so texture survives, and haze is filtered separately; depth, surface normals and material domains guide edge preservation. Disable it in Display to inspect raw sampling noise. The light meter always reads the unfiltered accumulation. Use **Fast** for a smaller ray budget; **Balanced** is the default, and **High** traces at up to native resolution. Traced pixels are capped at 196,608 / 1,048,576 / 4,194,304 respectively; a Catmull–Rom filter upsamples the traced image to the canvas, which retains its native navigation resolution. All three use the same transport model and the same land-use geometry; Fast bakes 2048-texel instead of 4096-texel ground atlases. Hold the camera still to accumulate paths. Moving the camera, changing optical settings, or receiving a new cloud field restarts accumulation; changing exposure, visual adaptation, or display denoising does not. Particle-size changes calculate new Mie tables and may briefly take time. On an RTX 5070 (Chromium, ANGLE on OpenGL), the default valley view at Balanced traces 1313 × 798 pixels at about 8–9 samples per second; the filtered display is clean after roughly 32 samples. With a cold driver shader cache, compiling the path tracer takes 10–20 s on first load. Software rendering is slow. A GPU fence limits expensive refinement to one pending pass, and asynchronous readback keeps the light meter from blocking navigation. Actual hardware performance depends on viewport size, GPU and cloud optical depth.
+Open the printed local address (normally <http://127.0.0.1:5173/>). Dragging, flying, scrolling and viewpoint changes use a rasterized navigation preview; 200 ms after movement stops, the spectral path tracer resumes. **Denoise display** is enabled by default and filters only the displayed image: surface light is filtered with its reflectance divided out, so texture survives, and haze is filtered separately; depth, surface normals and material domains guide edge preservation. Disable it in Display to inspect raw sampling noise. The light meter always reads the unfiltered accumulation. Use **Fast** for a smaller ray budget; **Balanced** is the default, and **High** traces at up to native resolution. Traced pixels are capped at 196,608 / 1,048,576 / 4,194,304 respectively; a Catmull–Rom filter upsamples the traced image to the canvas, which retains its native navigation resolution. All three use the same transport model and the same land-use geometry; Fast bakes 2048-texel instead of 4096-texel ground atlases. Hold the camera still to accumulate paths. Moving the camera, changing optical settings, or receiving a new cloud field restarts accumulation; changing exposure, visual adaptation, or display denoising does not. Particle-size changes calculate new Mie tables on up to four CPU workers; navigation stays available while the tables are prepared. The filtered display is clean after roughly 32 samples in the default valley view. With a cold driver shader cache, compiling the path tracer takes 10–20 s on first load. Software rendering is slow. Rendering runs on an OffscreenCanvas worker. Refinement is divided into bands of roughly 196,608 pixels, with a GPU fence limiting work to one pending band; complete samples alone are accumulated and displayed. Asynchronous readback keeps the light meter from blocking navigation. Actual hardware performance depends on viewport size, GPU and cloud optical depth.
 
 ```sh
 npm run check          # strict lint, numerical tests, type checking, production build
@@ -24,6 +24,31 @@ npm run preview       # serve the production build locally after npm run build
 For browser tests, install Chromium with `npx playwright install chromium`, or point `PLAYWRIGHT_CHROMIUM_EXECUTABLE` at an existing compatible Chromium executable. Headless checks use SwiftShader, so they verify rendering correctness rather than GPU performance. Screenshots and an exported settings file go into `test-results/`.
 
 GitHub Actions runs these checks on pushes and pull requests. When testing against the development server, finish application edits before starting browser checks: hot reload replaces the interface and interrupts in-flight interactions.
+
+## Rendering performance
+
+The main thread handles controls and navigation. A dedicated worker owns WebGL, metering and the weather client; the weather solver runs in its own worker. A pool of one to four additional workers calculates independent wavelength rows of the Mie tables. The pool reuses unchanged particle populations and discards superseded slider jobs after their current four-row batch. Table arrays and weather snapshots transfer ownership between workers, while camera/settings messages are small and limited to one unacknowledged update. This does not require shared-memory synchronization or cross-origin isolation headers.
+
+The GPU still does the spectral tracing. Small, fenced submissions let the browser composite the UI between bands. Completed weather snapshots are applied between whole samples, so faster weather cannot continually cancel an unfinished frame. Hidden tabs stop rendering and scheduling weather steps. PNG export is asynchronous from the worker canvas.
+
+A local Chromium/RTX 5070 production-build comparison at a 1280 × 800 viewport, DPR 1, Balanced, default clear daylight (940 × 800 traced pixels, five-second observation after warm-up) measured:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Main-thread animation cadence during refinement | 30.5 FPS | 60.0 FPS |
+| Longest animation gap during refinement | 66.8 ms | 16.8 ms |
+| Complete spectral samples per second | 10.0 | 9.4 |
+| Longest animation gap while changing cloud radius to 20 μm | 1,250 ms | 16.8 ms |
+
+The physical estimator and resolution are unchanged. Smaller GPU submissions have some scheduling overhead: the paired production run traded about 6% of sample throughput for smoother interaction. Worker-build throughput varied between 8.2 and 9.8 samples/s across the development and production runs; UI cadence stayed at 60 FPS. To repeat the measurement against a running development or preview server:
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser \
+  BENCHMARK_GPU_ARGS='--use-angle=gl-egl --ignore-gpu-blocklist --enable-gpu' \
+  node scripts/benchmark.mjs
+```
+
+Choose GPU flags appropriate to your platform; the output includes the actual GPU and ray dimensions. `BENCHMARK_URL` selects another server URL. SwiftShader browser tests check correctness and are not hardware performance measurements.
 
 ## Explore
 
@@ -141,7 +166,9 @@ The central **clear-air sightline** readout uses the sealed-cylinder intersectio
 | `src/render/mie.ts`, `solar.ts`, `majorant.ts` | Particle cross-sections/phase tables, source calibration and medium bounds |
 | `src/optics.ts` | Explicit mirror dimensions, reflection geometry and CPU window visibility |
 | `src/render/vision.ts`, `color.ts`, `postprocess.ts` | Display adaptation, spectral preview colors, filtering and metering |
-| `src/render/` | Three.js setup, 3D texture uploads, local-up navigation |
+| `src/render/client.ts`, `worker.ts`, `protocol.ts` | OffscreenCanvas ownership, bounded input updates, render scheduling and PNG export |
+| `src/render/particles.ts`, `particles.worker.ts` | Parallel Mie table generation and cancellation |
+| `src/render/renderer.ts`, `navigation.ts` | GPU band accumulation, 3D texture uploads, local-up navigation |
 | `src/ui/` | Parameter controls, imported settings validation, model notes |
 | `tests/` | Numerical physics/regression checks and browser rendering checks |
 

@@ -2,9 +2,8 @@ import './style.css';
 import { defaults, presets, weatherKeys } from './settings';
 import type { Settings } from './settings';
 import { angularVelocity, backgroundAt, boundaryDistance } from './physics';
-import { HabitatRenderer } from './render/renderer';
+import { RenderClient } from './render/client';
 import { Navigation } from './render/navigation';
-import { WeatherClient } from './weather/client';
 import { layout } from './ui/layout';
 import { formatValue, parseSettings, sliders, syncControls } from './ui/controls';
 import { icon } from './ui/icons';
@@ -37,20 +36,18 @@ function saveFile(url: string, name: string) {
 }
 
 function start() {
-  const renderer = new HabitatRenderer(canvas, settings);
+  const renderer = new RenderClient(canvas, settings, error => {
+    cancelAnimationFrame(frameHandle); showRendererError(error);
+  });
   const navigation = new Navigation(renderer.camera, canvas, settings);
-  const weather = new WeatherClient(settings, snapshot => renderer.setWeather(snapshot));
+  element<HTMLButtonElement>('snapshot').disabled = true;
   let resetTimer: ReturnType<typeof setTimeout>;
-  let fps = 0;
-  let sampleRate=0;
-  let lastReadoutSamples=0;
   let elapsed = 0;
-  let frames = 0;
   let previous = performance.now();
   const cameraDirection = renderer.camera.position.clone();
 
   function resize() {
-    renderer.resize(canvas.clientWidth, canvas.clientHeight, settings.quality);
+    renderer.resize(canvas.clientWidth, canvas.clientHeight);
   }
   new ResizeObserver(resize).observe(element('scene').parentElement!);
   resize();
@@ -64,7 +61,7 @@ function start() {
     }
     if (changed.some(key => weatherKeys.includes(key))) {
       clearTimeout(resetTimer);
-      resetTimer = setTimeout(() => weather.reset(settings), 180);
+      resetTimer = setTimeout(() => renderer.resetWeather(), 180);
     }
     element('speed-label').textContent = settings.clouds && settings.pressure > 0 ? `${settings.timeScale}×` : 'Weather off';
     element<HTMLButtonElement>('pause').disabled = !settings.clouds || settings.pressure <= 0;
@@ -116,7 +113,7 @@ function start() {
     toast('Experiment reset.');
   });
   element('reset-weather').addEventListener('click', () => {
-    clearTimeout(resetTimer); weather.reset(settings); toast('Weather restarted from the selected initial conditions.');
+    clearTimeout(resetTimer); renderer.resetWeather(); toast('Weather restarted from the selected initial conditions.');
   });
   element('pause').addEventListener('click', () => { settings.paused = !settings.paused; refresh(['paused']); });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-view]')) button.addEventListener('click', () => {
@@ -146,9 +143,14 @@ function start() {
   const dialog = element<HTMLDialogElement>('model-dialog');
   element('model-details').addEventListener('click', () => dialog.showModal());
   element('close-model').addEventListener('click', () => dialog.close());
-  element('snapshot').addEventListener('click', () => {
-    saveFile(renderer.screenshot(), `oneill-${settings.view}-${Math.floor(weather.stats.seconds)}s.png`);
-    toast('Saved the current view.');
+  element('snapshot').addEventListener('click', async () => {
+    try {
+      const name = `oneill-${settings.view}-${Math.floor(renderer.stats.weather.seconds)}s.png`;
+      const url = URL.createObjectURL(await renderer.screenshot());
+      saveFile(url, name);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('Saved the current view.');
+    } catch (error) { toast(error instanceof Error ? error.message : 'Could not save this view.'); }
   });
   element('export-settings').addEventListener('click', () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' }));
@@ -174,8 +176,8 @@ function start() {
   });
 
   function updateReadouts() {
-    const luminance=settings.diagnostic==='natural' ? renderer.luminance() : null;
-    element('luminance').textContent=luminance===null ? settings.diagnostic!=='natural' ? 'Diagnostic layer' : renderer.mode==='preview' ? 'Navigation preview' : 'Measuring…' : `${luminance>=1 ? luminance.toFixed(1) : luminance.toExponential(1)} cd/m²`;
+    const luminance=settings.diagnostic==='natural' ? renderer.stats.luminance : null;
+    element('luminance').textContent=luminance===null ? settings.diagnostic!=='natural' ? 'Diagnostic layer' : renderer.stats.mode==='preview' ? 'Navigation preview' : 'Measuring…' : `${luminance>=1 ? luminance.toFixed(1) : luminance.toExponential(1)} cd/m²`;
     const omega = angularVelocity(settings);
     element('rotation').textContent = omega > 0 ? `${(2*Math.PI/omega/60).toFixed(2)} min / turn` : 'Not rotating';
     element('axis-pressure').textContent = `${(backgroundAt(0,settings).pressure/100).toFixed(0)} hPa`;
@@ -189,16 +191,17 @@ function start() {
       const b = backgroundAt(radius,settings);
       column += b.pressure / 101325 * 288.15 / b.temperature * distance / 24;
     }
-    const transmission = settings.atmosphere ? Math.exp(-renderer.clearAirBlueExtinction*column) : 1;
+    const transmission = settings.atmosphere ? Math.exp(-renderer.stats.clearAirBlueExtinction*column) : 1;
     element('sightline').textContent = `${distance.toFixed(1)} km · B ${(transmission*100).toFixed(0)}%`;
-    const seconds = Math.floor(weather.stats.seconds);
+    const seconds = Math.floor(renderer.stats.weather.seconds);
     element('sim-time').textContent = [Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v => String(v).padStart(2,'0')).join(':');
-    element('cloud-fraction').textContent = `${(weather.stats.cloudFraction*100).toFixed(1)}%`;
-    element('max-wind').textContent = `${weather.stats.maxWind.toFixed(1)} m/s`;
-    element('cloud-mass').textContent = `${(weather.stats.cloudMass/1e6).toFixed(1)} kt`;
-    element('render-state').textContent=settings.diagnostic==='natural' && renderer.mode==='path'
-      ? `Path tracing · ${renderer.samples} samples · ${sampleRate.toFixed(1)} samples/s`
-      : `${renderer.mode==='preview' ? 'Navigation preview' : 'Diagnostic view'} · ${Math.round(fps)} fps`;
+    element('cloud-fraction').textContent = `${(renderer.stats.weather.cloudFraction*100).toFixed(1)}%`;
+    element('max-wind').textContent = `${renderer.stats.weather.maxWind.toFixed(1)} m/s`;
+    element('cloud-mass').textContent = `${(renderer.stats.weather.cloudMass/1e6).toFixed(1)} kt`;
+    element<HTMLButtonElement>('snapshot').disabled = !renderer.stats.raySize;
+    if (renderer.stats.raySize) element('render-state').textContent=settings.diagnostic==='natural' && renderer.stats.mode==='path'
+      ? `Path tracing · ${renderer.stats.samples} samples · ${renderer.stats.sampleRate.toFixed(1)} samples/s`
+      : `${renderer.stats.mode==='preview' ? 'Navigation preview' : 'Diagnostic view'} · ${Math.round(renderer.stats.fps)} fps`;
   }
 
   refresh([]);
@@ -209,24 +212,22 @@ function start() {
     const dt = Math.min(actualDt,0.1);
     previous = now;
     navigation.update(dt);
-    weather.update(actualDt,settings);
-    renderer.render(navigation.interacting);
-    frames++; elapsed += actualDt;
+    renderer.update(navigation.interacting);
+    elapsed += actualDt;
     if (elapsed >= 0.5) {
-      sampleRate=(renderer.samples>=lastReadoutSamples ? renderer.samples-lastReadoutSamples : renderer.samples)/elapsed;
-      lastReadoutSamples=renderer.samples;
-      fps = frames / elapsed; frames = 0; elapsed = 0;
+      elapsed = 0;
       updateReadouts();
     }
     frameHandle = requestAnimationFrame(frame);
   }
   frameHandle = requestAnimationFrame(frame);
-  window.addEventListener('pagehide', () => { cancelAnimationFrame(frameHandle); weather.dispose(); renderer.dispose(); }, { once: true });
+  document.addEventListener('visibilitychange', () => renderer.setVisible(!document.hidden));
+  window.addEventListener('pagehide', () => { cancelAnimationFrame(frameHandle); renderer.dispose(); }, { once: true });
 }
 
-try { start(); }
-catch (error) {
+function showRendererError(error: unknown) {
   element('render-state').textContent = 'Renderer unavailable';
+  element<HTMLButtonElement>('snapshot').disabled = true;
   const message = document.createElement('div');
   message.className = 'error-message';
   message.textContent = `The 3D renderer could not start. This experiment needs a browser with WebGL 2 enabled. ${error instanceof Error ? error.message : ''}`;
@@ -235,3 +236,6 @@ catch (error) {
   element('model-details').addEventListener('click', () => element<HTMLDialogElement>('model-dialog').showModal());
   element('close-model').addEventListener('click', () => element<HTMLDialogElement>('model-dialog').close());
 }
+
+try { start(); }
+catch (error) { showRendererError(error); }

@@ -4,6 +4,7 @@ import { backgroundAt,rayleighPerKm } from '../physics';
 import { mirrorGeometry, sunDirection } from '../optics';
 import { cloudMajorants } from './majorant';
 import { particleOptics, PHASE_TABLE_SIZE, SPECTRAL_BINS } from './mie';
+import type { Populations } from './particles';
 import { LAMP_RADIANCE_SCALE, SOLAR_ILLUMINANCE } from './solar';
 import type { WeatherSnapshot } from '../weather/client';
 import common from './shaders/common.glsl?raw';
@@ -37,6 +38,9 @@ export class HabitatRenderer {
   private readonly displayScene = new THREE.Scene();
   private readonly targets = [0,1].map(() => new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false,stencilBuffer:false}));
   private targetIndex=0;
+  private band=0;
+  private bands=1;
+  get sampleInProgress() { return this.band>0; }
   private readonly previousCamera = new THREE.Matrix4();
   private physicalState='';
   private terrainState='';
@@ -58,9 +62,10 @@ export class HabitatRenderer {
   private revision=0;
   mode:'preview'|'path'='preview';
   samples=0;
+  raySize='';
   private readonly geometry = new THREE.PlaneGeometry(2, 2);
 
-  constructor(readonly canvas: HTMLCanvasElement, settings: Settings) {
+  constructor(readonly canvas: HTMLCanvasElement | OffscreenCanvas, settings: Settings, populations?: Populations) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     if (!this.renderer.extensions.has('EXT_color_buffer_float')) throw new Error('Floating-point render targets are required for physical light accumulation.');
@@ -116,7 +121,7 @@ export class HabitatRenderer {
       vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
       fragmentShader:common+landscape+surface+geometry+guides,uniforms:this.material.uniforms});
     this.guideScene.add(new THREE.Mesh(this.geometry,this.guideMaterial));
-    this.apply(settings);
+    this.apply(settings,populations);
   }
 
   private configureTexture(texture: THREE.Data3DTexture) {
@@ -151,11 +156,11 @@ export class HabitatRenderer {
     this.material.uniforms.uCloudMajorant.value=this.cloudBounds;
   }
 
-  apply(s: Settings) {
+  apply(s: Settings, preparedPopulations?: Populations) {
     const u = this.material.uniforms;
     const particleState=JSON.stringify([s.aerosolRadius,s.cloudRadius]);
     if (particleState!==this.particleState) {
-      const populations=[particleOptics(s.aerosolRadius,0.35,[1.5,0.01]),particleOptics(s.cloudRadius,0.35,[1.333,1e-9])];
+      const populations=preparedPopulations ?? [particleOptics(s.aerosolRadius,0.35,[1.5,0.01]),particleOptics(s.cloudRadius,0.35,[1.333,1e-9])];
       populations.forEach((population,i)=>{
         this.particleTextures[i].dispose();
         const texture=new THREE.DataTexture(population.data,PHASE_TABLE_SIZE,SPECTRAL_BINS,THREE.RGBAFormat,THREE.FloatType);
@@ -205,11 +210,11 @@ export class HabitatRenderer {
     if (physicalState!==this.physicalState) {this.resetAccumulation();this.physicalState=physicalState;}
   }
 
-  private resetAccumulation() {this.samples=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
+  private resetAccumulation() {this.samples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
 
-  resize(width: number, height: number, quality: Settings['quality']) {
+  resize(width: number, height: number, quality: Settings['quality'], pixelRatio=globalThis.devicePixelRatio ?? 1) {
     const scale = { fast: 0.5, balanced: 1, high: 1 }[quality];
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    this.renderer.setPixelRatio(Math.min(pixelRatio, 1.5));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
@@ -218,10 +223,11 @@ export class HabitatRenderer {
     const budget={fast:196608,balanced:1048576,high:4194304}[quality];
     const reduction=Math.min(1,Math.sqrt(budget/(size.x*size.y*scale*scale)));
     const x=Math.max(16,Math.floor(size.x*scale*reduction)),y=Math.max(16,Math.floor(size.y*scale*reduction));
+    this.bands=Math.ceil(x*y/196608);
     this.material.uniforms.uResolution.value.set(x,y);
     for (const target of this.targets) target.setSize(x,y);
     this.guideTarget.setSize(x,y);this.denoiser.resize(x,y);
-    this.resetAccumulation();this.canvas.dataset.raySize=`${x}×${y}`;
+    this.resetAccumulation();this.raySize=`${x}×${y}`;
   }
 
   render(interacting=false) {
@@ -235,45 +241,51 @@ export class HabitatRenderer {
       this.resetAccumulation();this.previousCamera.copy(this.camera.matrixWorld);
     }
     if(changed || interacting) this.lastMovement=performance.now();
+    const gl=this.renderer.getContext() as WebGL2RenderingContext;
+    if(this.frameFence) {
+      // Even a display-only draw queues behind unfinished tracing. Never build
+      // a GPU backlog: the preserved canvas already contains the last image.
+      if(gl.clientWaitSync(this.frameFence,0,0)===gl.TIMEOUT_EXPIRED) return false;
+      gl.deleteSync(this.frameFence);this.frameFence=null;
+    }
     this.preview.prepare(this.renderer);
     this.mode=interacting || performance.now()-this.lastMovement<200 ? 'preview' : 'path';
-    this.canvas.dataset.mode=this.mode;
-    const gl=this.renderer.getContext() as WebGL2RenderingContext;
-    let pending=false;
-    if(this.frameFence) {
-      pending=gl.clientWaitSync(this.frameFence,0,0)===gl.TIMEOUT_EXPIRED;
-      if(!pending) {gl.deleteSync(this.frameFence);this.frameFence=null;}
-    }
     if(this.mode==='preview') {
       this.preview.render(this.renderer,this.camera,exposure,this.adaptiveExposure);
-      this.canvas.dataset.samples=String(this.samples);return;
-    }
-    if(pending) {this.renderer.render(this.displayScene,this.screenCamera);return;}
-    if(this.guidesDirty && this.material.uniforms.uDiagnostic.value===0) {
-      this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
-      this.guidesDirty=false;
+      this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
+      return true;
     }
     const previous=this.targets[this.targetIndex];
-    this.targetIndex=1-this.targetIndex;
-    const target=this.targets[this.targetIndex];
+    const target=this.targets[1-this.targetIndex];
+    const bottom=Math.floor(this.band*target.height/this.bands);
+    const top=Math.floor((this.band+1)*target.height/this.bands);
+    // Keep individual GPU submissions small enough for input and compositing.
+    // Only complete samples become visible or participate in accumulation.
+    for (const output of [target,this.guideTarget]) {
+      output.scissorTest=true;output.scissor.set(0,bottom,target.width,top-bottom);
+    }
+    if(this.guidesDirty && this.material.uniforms.uDiagnostic.value===0) {
+      this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
+    }
     this.material.uniforms.uSample.value=this.samples;
     this.material.uniforms.uPrevious.value=previous.textures[0];
     this.material.uniforms.uPreviousHaze.value=previous.textures[1];
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.screenCamera);
     this.renderer.setRenderTarget(null);
+    if (++this.band<this.bands) {
+      this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
+      return false;
+    }
+    this.band=0;this.targetIndex=1-this.targetIndex;this.guidesDirty=false;
     this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
       ? this.denoiser.filter(this.renderer,target,this.guideTarget,this.samples+1) : target.textures[0];
     if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
       this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);
     this.samples++;
-    this.canvas.dataset.samples=String(this.samples);
     this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
-  }
-
-  screenshot() {
-    return this.canvas.toDataURL('image/png');
+    return true;
   }
 
   luminance() {

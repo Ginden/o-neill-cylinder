@@ -1,40 +1,25 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { canvasPixels as pixels, captureErrors, waitForScene } from './canvas';
 
-test.afterEach(async({page})=>{
-  const error=await page.locator('#scene').evaluate((canvas:HTMLCanvasElement)=>canvas.getContext('webgl2')!.getError());
-  expect(error).toBe(0);
-});
+const errors = new WeakMap<Page, string[]>();
+test.beforeEach(({ page }) => { errors.set(page, captureErrors(page)); });
+test.afterEach(({ page }) => { expect(errors.get(page)).toEqual([]); });
 
 async function settleRender(page: Page) {
-  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-}
-
-async function pixels(page: Page) {
-  return page.locator('#scene').evaluate((canvas: HTMLCanvasElement) => {
-    const gl = canvas.getContext('webgl2')!;
-    const rgba = new Uint8Array(canvas.width * canvas.height * 4);
-    gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
-    let sum = 0, min = 255, max = 0;
-    for (let i = 0; i < rgba.length; i += 16) {
-      sum += rgba[i]; min = Math.min(min,rgba[i]); max = Math.max(max,rgba[i]);
-    }
-    return { mean: sum/(rgba.length/16),min,max,width:canvas.width,height:canvas.height };
-  });
+  const canvas = page.locator('#scene');
+  const previous = await canvas.getAttribute('data-samples');
+  await expect.poll(() => canvas.getAttribute('data-samples')).not.toBe(previous);
 }
 
 test('renders a varied landscape without shader errors and exposes physical comparisons', async ({ page }) => {
-  const errors: string[] = [];
-  page.on('pageerror',error => errors.push(error.message));
-  page.on('console',message => {
-    if (message.type() === 'error') errors.push(message.text());
-  });
   // Fast rendering makes this a shader correctness check even on software graphics.
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
+  await waitForScene(page);
   await expect(page.locator('#render-state')).toContainText('Path tracing');
   await settleRender(page);
-  expect(errors).toEqual([]);
+  expect(errors.get(page)).toEqual([]);
   const natural = await pixels(page);
   expect(natural.max-natural.min).toBeGreaterThan(70);
   expect(natural.mean).toBeGreaterThan(10);
@@ -58,11 +43,12 @@ test('renders a varied landscape without shader errors and exposes physical comp
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByRole('dialog')).toContainText('Boussinesq');
   await page.getByRole('button',{ name:'Close model notes' }).click();
-  expect(errors).toEqual([]);
+  expect(errors.get(page)).toEqual([]);
 });
 
 test('updates the habitat, evolves weather, and round-trips an exported experiment', async ({ page }) => {
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',timeScale:300,humidity:78,clouds:true })).toString('base64'));
+  await waitForScene(page);
   await expect(page.locator('#render-state')).toContainText('Path tracing');
   await page.getByRole('tab',{ name:'weather',exact:true }).click();
   await expect(page.locator('#cloud-fraction')).not.toHaveText('—');
@@ -105,6 +91,7 @@ test('updates the habitat, evolves weather, and round-trips an exported experime
 test('keeps the experiment usable on a narrow screen', async ({ page }) => {
   await page.setViewportSize({ width:390,height:844 });
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
+  await waitForScene(page);
   await expect(page.locator('#render-state')).toContainText('Path tracing');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBe(false);
@@ -116,6 +103,7 @@ test('keeps the experiment usable on a narrow screen', async ({ page }) => {
 
 test('keeps an unlit habitat dark at the same camera exposure',async({page})=>{
   await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true,solarPower:0,view:'axis',adaptiveExposure:false})).toString('base64'));
+  await waitForScene(page);
   await expect(page.locator('#render-state')).toContainText('Path tracing');
   await settleRender(page);
   const dark=await pixels(page);
