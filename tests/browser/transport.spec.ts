@@ -21,7 +21,7 @@ test('GPU ratio tracking and collision survival agree with analytic Beer–Lambe
       out vec4 outColor;
       void main(){
         rngState=uint(gl_FragCoord.x)*9781u+0x68bc21ebu;
-        wavelength=550.0;spectralBin=17.0;
+        wavelength=550.0;spectralBin=17.0;prepareWavelength();
         int band=int(gl_FragCoord.x)/2048;
         float distance=band==0 ? 0.0 : band==1 ? 10.0 : 40.0;
         float transmission=shadowTransmission(vec3(0),vec3(0,0,1),distance);

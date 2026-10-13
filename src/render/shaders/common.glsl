@@ -1,6 +1,12 @@
 const float PI = 3.141592653589793;
 float wavelength;
 float spectralBin;
+float glassIndex;
+float sigmaRayleigh;
+vec2 sigmaAerosol;
+vec2 sigmaCloud;
+float solarSpectrum;
+float lampSpectrum;
 uniform float uRadius;
 uniform float uLength;
 uniform float uGravity;
@@ -10,6 +16,8 @@ uniform float uLapse;
 uniform float uWindowFraction;
 uniform float uWindowTransmission;
 uniform float uTerrainHeight;
+uniform sampler2D uTerrain;
+uniform bool uCachedTerrain;
 uniform float uAerosol;
 uniform float uAerosolScale;
 uniform sampler2D uAerosolPhase;
@@ -98,6 +106,8 @@ float groundHeight(vec2 p) {
 
 float surfaceDistance(vec3 p) {
   float theta = atan(p.y, p.x);
-  float height = windowAt(theta) ? 0.0 : groundHeight(groundCoordinates(p));
+  float height = windowAt(theta) ? 0.0 : uCachedTerrain
+    ? texture(uTerrain,vec2((theta+PI)/(2.0*PI),p.z/uLength+0.5)).r
+    : groundHeight(groundCoordinates(p));
   return min(uRadius - length(p.xy) - height, uLength * 0.5 - abs(p.z));
 }

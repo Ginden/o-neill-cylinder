@@ -5,9 +5,9 @@ float blackbody(float temperature) {
   float lambda=wavelength*1e-9;
   return 1.191042972e-16/(pow(lambda,5.0)*(exp(0.01438776877/(lambda*temperature))-1.0))*1e-9;
 }
-float solarRadiance() {return blackbody(5772.0)*uSolarPower;}
+float solarRadiance() {return solarSpectrum;}
 float solarIrradiance() {return solarRadiance()*SUN_SOLID_ANGLE;}
-float lampRadiance() {return blackbody(2800.0)*uLampScale;}
+float lampRadiance() {return lampSpectrum;}
 
 float matchingGaussian(float center,float left,float right) {
   float t=(wavelength-center)*(wavelength<center ? left : right);

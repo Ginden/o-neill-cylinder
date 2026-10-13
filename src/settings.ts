@@ -25,6 +25,7 @@ export interface Settings {
   timeScale: number;
   clouds: boolean;
   atmosphere: boolean;
+  denoise: boolean;
   paused: boolean;
   diagnostic: 'natural' | 'transmission' | 'density' | 'cloud';
   quality: 'fast' | 'balanced' | 'high';
@@ -40,7 +41,7 @@ export const defaults: Settings = {
   lightMode: 'mirrors', sunAzimuth: 90, sunElevation: 90,
   mirrorTilt: 0, mirrorReflectivity: 0.9, solarPower: 1, exposure: 2.2,
   terrainHeight: 0.16, surfaceHeating: 0.018, evaporation: 0.000008,
-  wind: 3, timeScale: 120, clouds: false, atmosphere: true, paused: false,
+  wind: 3, timeScale: 120, clouds: false, atmosphere: true, denoise:true, paused: false,
   diagnostic: 'natural', quality: 'balanced', view: 'valley', seed: 42
 };
 

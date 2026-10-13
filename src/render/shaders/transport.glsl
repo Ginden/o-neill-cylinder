@@ -35,9 +35,16 @@ float rayleighCoefficient() {
   float factor=(n*n-1.0)/(n*n+2.0)/((nRef*nRef-1.0)/(nRef*nRef+2.0));
   return 0.013558*pow(550.0/wavelength,4.0)*factor*factor;
 }
+void prepareWavelength() {
+  sigmaRayleigh=rayleighCoefficient();
+  sigmaAerosol=particleRow(0,1).ba*uAerosol*uAerosolScale;
+  sigmaCloud=particleRow(0,2).ba;
+  glassIndex=glassIndexAtWavelength();
+  solarSpectrum=blackbody(5772.0)*uSolarPower;lampSpectrum=blackbody(2800.0)*uLampScale;
+}
 float extinctionAt(vec3 p) {
   if (!uAtmosphere || uPressure<=0.0) return 0.0;
-  return (rayleighCoefficient()+uAerosol*uAerosolScale*particleRow(0,1).b)*airDensity(p)+weatherAt(p).r*particleRow(0,2).b;
+  return (sigmaRayleigh+sigmaAerosol.x)*airDensity(p)+weatherAt(p).r*sigmaCloud.x;
 }
 float phasePhysical(float cosine,int species) {
   if (species==0) return 3.0/(16.0*PI)*(1.0+cosine*cosine);
@@ -76,6 +83,7 @@ vec3 phaseSample(vec3 axis,int species) {
 // Per-cell majorants bound all eight trilinearly interpolated cloud samples.
 // Air's global bound is small; a global cloud bound would stall dense scenes.
 float cellMajorant(vec3 p,vec3 d,out float travel) {
+  if (!uClouds) {travel=1e20;return uAirMajorant;}
   vec3 count=vec3(textureSize(uWeather,0));
   vec3 size=vec3(2.0*uRadius,2.0*uRadius,uLength);
   vec3 grid=(p/size+0.5)*count+0.5;
@@ -124,9 +132,9 @@ bool mediumEvent(vec3 p,vec3 d,float distance,inout float weight,out vec3 point,
     t+=flight;
     vec3 q=p+d*t;
     float density=airDensity(q);
-    float molecular=rayleighCoefficient()*density;
-    float aerosol=uAerosol*density*uAerosolScale*particleRow(0,1).a;
-    float cloud=weatherAt(q).r*particleRow(0,2).a;
+    float molecular=sigmaRayleigh*density;
+    float aerosol=sigmaAerosol.y*density;
+    float cloud=weatherAt(q).r*sigmaCloud.y;
     float total=extinctionAt(q);
     float choice=randomValue()*majorant;
     if (choice>=total) continue;

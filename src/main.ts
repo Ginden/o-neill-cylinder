@@ -42,6 +42,8 @@ function start() {
   const weather = new WeatherClient(settings, snapshot => renderer.setWeather(snapshot));
   let resetTimer: ReturnType<typeof setTimeout>;
   let fps = 0;
+  let sampleRate=0;
+  let lastReadoutSamples=0;
   let elapsed = 0;
   let frames = 0;
   let previous = performance.now();
@@ -88,7 +90,7 @@ function start() {
       refresh([spec.key]);
     });
   }
-  for (const key of ['clouds','atmosphere'] as const) element<HTMLInputElement>(key).addEventListener('change', event => {
+  for (const key of ['clouds','atmosphere','denoise'] as const) element<HTMLInputElement>(key).addEventListener('change', event => {
     settings[key] = (event.target as HTMLInputElement).checked;
     refresh([key]);
     element<HTMLSelectElement>('preset').value = 'Custom';
@@ -173,7 +175,7 @@ function start() {
 
   function updateReadouts() {
     const luminance=settings.diagnostic==='natural' ? renderer.luminance() : null;
-    element('luminance').textContent=luminance===null ? 'Diagnostic layer' : `${luminance>=1 ? luminance.toFixed(1) : luminance.toExponential(1)} cd/m²`;
+    element('luminance').textContent=luminance===null ? settings.diagnostic!=='natural' ? 'Diagnostic layer' : renderer.mode==='preview' ? 'Navigation preview' : 'Measuring…' : `${luminance>=1 ? luminance.toFixed(1) : luminance.toExponential(1)} cd/m²`;
     const omega = angularVelocity(settings);
     element('rotation').textContent = omega > 0 ? `${(2*Math.PI/omega/60).toFixed(2)} min / turn` : 'Not rotating';
     element('axis-pressure').textContent = `${(backgroundAt(0,settings).pressure/100).toFixed(0)} hPa`;
@@ -194,7 +196,9 @@ function start() {
     element('cloud-fraction').textContent = `${(weather.stats.cloudFraction*100).toFixed(1)}%`;
     element('max-wind').textContent = `${weather.stats.maxWind.toFixed(1)} m/s`;
     element('cloud-mass').textContent = `${(weather.stats.cloudMass/1e6).toFixed(1)} kt`;
-    element('render-state').textContent = `${settings.diagnostic === 'natural' ? `Path tracing · ${renderer.samples} samples` : 'Diagnostic view'} · ${Math.round(fps)} fps`;
+    element('render-state').textContent=settings.diagnostic==='natural' && renderer.mode==='path'
+      ? `Path tracing · ${renderer.samples} samples · ${sampleRate.toFixed(1)} samples/s`
+      : `${renderer.mode==='preview' ? 'Navigation preview' : 'Diagnostic view'} · ${Math.round(fps)} fps`;
   }
 
   refresh([]);
@@ -206,9 +210,11 @@ function start() {
     previous = now;
     navigation.update(dt);
     weather.update(actualDt,settings);
-    renderer.render();
+    renderer.render(navigation.interacting);
     frames++; elapsed += actualDt;
     if (elapsed >= 0.5) {
+      sampleRate=(renderer.samples>=lastReadoutSamples ? renderer.samples-lastReadoutSamples : renderer.samples)/elapsed;
+      lastReadoutSamples=renderer.samples;
       fps = frames / elapsed; frames = 0; elapsed = 0;
       updateReadouts();
     }

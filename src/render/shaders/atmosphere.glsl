@@ -17,6 +17,7 @@ void main() {
   int stratum=(uSample%41*17+offset)%41;
   wavelength=380.0+(float(stratum)+randomValue())*(400.0/41.0);
   spectralBin=(wavelength-380.0)/10.0;
+  prepareWavelength();
   vec2 jitter=uDiagnostic==0 ? vec2(randomValue(),randomValue())-0.5 : vec2(0.0);
   vec2 ndc=(gl_FragCoord.xy+jitter)/uResolution*2.0-1.0;
   vec4 view=uInverseProjection*vec4(ndc,1.0,1.0);
@@ -27,13 +28,17 @@ void main() {
     float distance=traceInterior(uCameraPosition,ray);
     vec3 opticalDepth=vec3(0.0);
     float densityIntegral=0.0,liquidIntegral=0.0;
+    vec3 airBeta=vec3(0.0),cloudBeta=vec3(0.0);
+    if(uAtmosphere && uPressure>0.0) for(int channel=0;channel<3;channel++) {
+      wavelength=channel==0 ? 680.0 : channel==1 ? 550.0 : 440.0;
+      spectralBin=(wavelength-380.0)/10.0;prepareWavelength();
+      airBeta[channel]=sigmaRayleigh+sigmaAerosol.x;cloudBeta[channel]=sigmaCloud.x;
+    }
     for (int i=0;i<128;i++) {
       if (i>=uSteps) break;
       vec3 p=uCameraPosition+ray*distance*(float(i)+0.5)/float(uSteps);
       float segment=distance/float(uSteps);
-      wavelength=680.0;spectralBin=30.0;opticalDepth.r+=extinctionAt(p)*segment;
-      wavelength=550.0;spectralBin=17.0;opticalDepth.g+=extinctionAt(p)*segment;
-      wavelength=440.0;spectralBin=6.0;opticalDepth.b+=extinctionAt(p)*segment;
+      opticalDepth+=(airBeta*airDensity(p)+cloudBeta*weatherAt(p).r)*segment;
       densityIntegral+=airDensity(p)*segment;
       liquidIntegral+=weatherAt(p).r*segment*1000.0;
     }
@@ -41,9 +46,11 @@ void main() {
     if (uDiagnostic==2) color=mix(vec3(0.02,0.08,0.18),vec3(0.98,0.7,0.19),1.0-exp(-densityIntegral/8.0));
     if (uDiagnostic==3) color=mix(vec3(0.015,0.025,0.04),vec3(0.48,0.87,0.83),1.0-exp(-liquidIntegral*2.0));
   }
+  float secondMoment=dot(color,color)/3.0;
   if (uSample>0 && uDiagnostic==0) {
-    vec3 previous=texelFetch(uPrevious,ivec2(gl_FragCoord.xy),0).rgb;
-    color=previous+(color-previous)/float(uSample+1);
+    vec4 previous=texelFetch(uPrevious,ivec2(gl_FragCoord.xy),0);
+    secondMoment=previous.a+(secondMoment-previous.a)/float(uSample+1);
+    color=previous.rgb+(color-previous.rgb)/float(uSample+1);
   }
-  outColor=vec4(color,1.0);
+  outColor=vec4(color,secondMoment);
 }

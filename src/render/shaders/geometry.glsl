@@ -11,10 +11,13 @@ bool windowOpening(vec3 p) {
   return margin*(2.0*PI/3.0)*uRadius>0.005 && ring>0.005;
 }
 
+float glassIndexAtWavelength() {
+  float l2=pow(wavelength*0.001,2.0);
+  return sqrt(1.0+1.03961212*l2/(l2-0.00600069867)+0.231792344*l2/(l2-0.0200179144)+1.01046945*l2/(l2-103.560653));
+}
 vec2 glassPlate(float cosine) {
   float c = clamp(abs(cosine),0.0,1.0);
-  float l2=pow(wavelength*0.001,2.0);
-  float eta=sqrt(1.0+1.03961212*l2/(l2-0.00600069867)+0.231792344*l2/(l2-0.0200179144)+1.01046945*l2/(l2-103.560653)); // BK7 Sellmeier dispersion.
+  float eta=glassIndex;
   float ct = sqrt(1.0-(1.0-c*c)/(eta*eta));
   float rs = (c-eta*ct)/(c+eta*ct);
   float rp = (eta*c-ct)/(eta*c+ct);

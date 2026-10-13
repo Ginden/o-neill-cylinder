@@ -12,6 +12,7 @@ export class Navigation {
   private readonly right = new THREE.Vector3();
   private readonly target = new THREE.Vector3();
   moved = false;
+  get interacting() {return this.drag || this.keys.size>0;}
 
   constructor(private readonly camera: THREE.PerspectiveCamera, canvas: HTMLCanvasElement, private readonly settings: Settings) {
     canvas.addEventListener('pointerdown', e => {

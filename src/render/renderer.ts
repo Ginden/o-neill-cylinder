@@ -13,6 +13,9 @@ import geometry from './shaders/geometry.glsl?raw';
 import transport from './shaders/transport.glsl?raw';
 import display from './shaders/display.glsl?raw';
 import spectrum from './shaders/spectrum.glsl?raw';
+import guides from './shaders/guides.glsl?raw';
+import { NavigationPreview } from './preview';
+import { DisplayDenoiser } from './postprocess';
 
 export class HabitatRenderer {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.001, 200);
@@ -33,6 +36,20 @@ export class HabitatRenderer {
   private targetIndex=0;
   private readonly previousCamera = new THREE.Matrix4();
   private physicalState='';
+  private terrainState='';
+  private readonly preview:NavigationPreview;
+  private readonly denoiser:DisplayDenoiser;
+  private readonly guideTarget=new THREE.WebGLRenderTarget(1,1,{count:2,type:THREE.FloatType,depthBuffer:false});
+  private readonly guideScene=new THREE.Scene();
+  private readonly guideMaterial:THREE.ShaderMaterial;
+  private guidesDirty=true;
+  private denoise=true;
+  private lastMovement=0;
+  private frameFence:WebGLSync|null=null;
+  private meterBusy=false;
+  private meterValue:number|null=null;
+  private revision=0;
+  mode:'preview'|'path'='preview';
   samples=0;
   private readonly geometry = new THREE.PlaneGeometry(2, 2);
 
@@ -57,6 +74,7 @@ export class HabitatRenderer {
         uWindowFraction: { value: settings.windowFraction },
         uWindowTransmission: { value: settings.windowTransmission },
         uTerrainHeight: { value: settings.terrainHeight }, uAerosol: { value: settings.aerosol },
+        uTerrain:{value:null},uCachedTerrain:{value:true},
         uSolarPower: { value: settings.solarPower },
         uAerosolPhase:{value:this.particleTextures[0]},uCloudPhase:{value:this.particleTextures[1]},
         uAerosolScale:{value:1},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE},uLampScale:{value:LAMP_RADIANCE_SCALE},
@@ -80,6 +98,13 @@ export class HabitatRenderer {
       uniforms:{uImage:{value:this.targets[0].texture},uExposure:{value:settings.exposure},
         uDiagnostic:{value:0},uDisplayResolution:{value:new THREE.Vector2(1,1)}}});
     this.displayScene.add(new THREE.Mesh(this.geometry,this.displayMaterial));
+    this.preview=new NavigationPreview(this.material.uniforms,this.geometry);
+    this.material.uniforms.uTerrain.value=this.preview.terrain.texture;
+    this.denoiser=new DisplayDenoiser(this.geometry);
+    this.guideMaterial=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
+      fragmentShader:common+surface+geometry+guides,uniforms:this.material.uniforms});
+    this.guideScene.add(new THREE.Mesh(this.geometry,this.guideMaterial));
     this.apply(settings);
   }
 
@@ -103,7 +128,7 @@ export class HabitatRenderer {
       this.weather.needsUpdate = true;
     }
     this.updateCloudBounds();
-    if (this.material.uniforms.uClouds.value) this.samples=0;
+    if (this.material.uniforms.uClouds.value) this.resetAccumulation();
   }
 
   private updateCloudBounds() {
@@ -159,27 +184,57 @@ export class HabitatRenderer {
     u.uDiagnostic.value = ['natural', 'transmission', 'density', 'cloud'].indexOf(s.diagnostic);
     this.displayMaterial.uniforms.uDiagnostic.value=u.uDiagnostic.value;
     this.displayMaterial.uniforms.uExposure.value=s.exposure;
+    this.denoise=s.denoise;
+    const terrainState=JSON.stringify([s.radius,s.length,s.terrainHeight]);
     const physicalState=JSON.stringify([scalar,particleState,s.sunAzimuth,s.sunElevation,s.mirrorTilt,s.lightMode,s.quality,s.diagnostic]);
-    if (physicalState!==this.physicalState) {this.samples=0;this.physicalState=physicalState;}
+    this.preview.invalidate(terrainState!==this.terrainState,physicalState!==this.physicalState);
+    this.terrainState=terrainState;
+    if (physicalState!==this.physicalState) {this.resetAccumulation();this.physicalState=physicalState;}
   }
+
+  private resetAccumulation() {this.samples=0;this.meterValue=null;this.guidesDirty=true;this.revision++;}
 
   resize(width: number, height: number, quality: Settings['quality']) {
     const scale = { fast: 0.45, balanced: 0.7, high: 1 }[quality];
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5) * scale);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.getDrawingBufferSize(this.material.uniforms.uResolution.value);
-    this.displayMaterial.uniforms.uDisplayResolution.value.copy(this.material.uniforms.uResolution.value);
-    const {x,y}=this.material.uniforms.uResolution.value;
+    const size=this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.displayMaterial.uniforms.uDisplayResolution.value.copy(size);
+    const budget={fast:98304,balanced:262144,high:786432}[quality];
+    const reduction=Math.min(1,Math.sqrt(budget/(size.x*size.y*scale*scale)));
+    const x=Math.max(16,Math.floor(size.x*scale*reduction)),y=Math.max(16,Math.floor(size.y*scale*reduction));
+    this.material.uniforms.uResolution.value.set(x,y);
     for (const target of this.targets) target.setSize(x,y);
-    this.samples=0;
+    this.guideTarget.setSize(x,y);this.denoiser.resize(x,y);
+    this.resetAccumulation();this.canvas.dataset.raySize=`${x}×${y}`;
   }
 
-  render() {
+  render(interacting=false) {
     this.camera.updateMatrixWorld();
-    if (!this.camera.matrixWorld.equals(this.previousCamera)) {
-      this.samples=0;this.previousCamera.copy(this.camera.matrixWorld);
+    const changed=!this.camera.matrixWorld.equals(this.previousCamera);
+    if (changed) {
+      this.resetAccumulation();this.previousCamera.copy(this.camera.matrixWorld);
+    }
+    if(changed || interacting) this.lastMovement=performance.now();
+    this.preview.prepare(this.renderer);
+    this.mode=interacting || performance.now()-this.lastMovement<200 ? 'preview' : 'path';
+    this.canvas.dataset.mode=this.mode;
+    const gl=this.renderer.getContext() as WebGL2RenderingContext;
+    let pending=false;
+    if(this.frameFence) {
+      pending=gl.clientWaitSync(this.frameFence,0,0)===gl.TIMEOUT_EXPIRED;
+      if(!pending) {gl.deleteSync(this.frameFence);this.frameFence=null;}
+    }
+    if(this.mode==='preview') {
+      this.preview.render(this.renderer,this.camera,this.displayMaterial.uniforms.uExposure.value);
+      this.canvas.dataset.samples=String(this.samples);return;
+    }
+    if(pending) {this.renderer.render(this.displayScene,this.screenCamera);return;}
+    if(this.guidesDirty && this.material.uniforms.uDiagnostic.value===0) {
+      this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
+      this.guidesDirty=false;
     }
     const previous=this.targets[this.targetIndex];
     this.targetIndex=1-this.targetIndex;
@@ -189,23 +244,32 @@ export class HabitatRenderer {
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.screenCamera);
     this.renderer.setRenderTarget(null);
-    this.displayMaterial.uniforms.uImage.value=target.texture;
+    this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
+      ? this.denoiser.filter(this.renderer,target.texture,this.guideTarget,this.samples+1) : target.texture;
     this.renderer.render(this.displayScene,this.screenCamera);
     this.samples++;
+    this.canvas.dataset.samples=String(this.samples);
+    this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
   }
 
   screenshot() {
-    this.render();
     return this.canvas.toDataURL('image/png');
   }
 
   luminance() {
+    if(this.mode==='preview' || this.samples===0) return null;
+    if(this.meterBusy) return this.meterValue;
+    this.meterBusy=true;
+    const revision=this.revision;
     const target=this.targets[this.targetIndex];
     const pixels=new Float32Array(5*5*4);
-    this.renderer.readRenderTargetPixels(target,Math.floor(target.width/2)-2,Math.floor(target.height/2)-2,5,5,pixels);
-    let sum=0;
-    for (let i=1;i<pixels.length;i+=4) sum+=pixels[i];
-    return sum/25*SOLAR_ILLUMINANCE;
+    void this.renderer.readRenderTargetPixelsAsync(target,Math.floor(target.width/2)-2,Math.floor(target.height/2)-2,5,5,pixels)
+      .then(()=>{
+        if(revision!==this.revision) return;
+        let sum=0;for(let i=1;i<pixels.length;i+=4) sum+=pixels[i];
+        this.meterValue=sum/25*SOLAR_ILLUMINANCE;
+      }).finally(()=>{this.meterBusy=false;});
+    return this.meterValue;
   }
 
   get clearAirBlueExtinction() {
@@ -215,7 +279,10 @@ export class HabitatRenderer {
   dispose() {
     this.geometry.dispose(); this.material.dispose();this.displayMaterial.dispose();
     for (const target of this.targets) target.dispose();
-    this.weather.dispose();this.cloudBounds.dispose(); this.renderer.dispose();
+    this.weather.dispose();this.cloudBounds.dispose();
     for (const texture of this.particleTextures) texture.dispose();
+    this.preview.dispose();this.denoiser.dispose();this.guideTarget.dispose();this.guideMaterial.dispose();
+    if(this.frameFence) (this.renderer.getContext() as WebGL2RenderingContext).deleteSync(this.frameFence);
+    this.renderer.dispose();
   }
 }
