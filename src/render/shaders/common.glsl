@@ -28,6 +28,8 @@ uniform sampler2D uAnchorTerrain;
 uniform bool uCachedTerrain;
 uniform sampler2D uLandCover;
 uniform bool uLandUse;
+// Ground observer's clearing: wall arc length, axial z, radius (km; 0 disables).
+uniform vec3 uObjectClearing;
 uniform float uAerosol;
 uniform float uAerosolScale;
 uniform sampler2D uAerosolPhase;

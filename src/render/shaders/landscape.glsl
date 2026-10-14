@@ -123,6 +123,15 @@ float anchorHeight(vec2 g) {
   return uCachedTerrain ? textureLod(uAnchorTerrain, groundAtlas(g), 0.0).r : groundHeight(g);
 }
 
+// Remove whole objects whose footprint overlaps the observer's clearing.
+// Wrap the arc distance so the clearing also works across the atlas seam.
+bool clearedObject(vec2 center, float extent, float top) {
+  if (uObjectClearing.z <= 0.0) return false;
+  vec2 offset = center - uObjectClearing.xy;
+  offset.x = mod(offset.x + PI * uRadius, 2.0 * PI * uRadius) - PI * uRadius;
+  return length(offset) < uObjectClearing.z + extent * uRadius / (uRadius - top);
+}
+
 // Crowns are ellipsoids above their anchor's terrain. A 3 × 3 neighborhood is
 // exact to 4.9 m: crowns reach at most 5.5 m from a center jittered ±0.2 cells.
 // `elevation` is the height of p above the wall, `scale` converts arc length.
@@ -142,6 +151,7 @@ float treeDistance(vec2 g, float elevation, float scale, out vec2 nearest) {
     float height = mix(0.008, 0.024, cover.g) * (0.72 + 0.5 * a.w);
     float conifer = step(0.8, b.x) * step(0.9, cover.g);
     float radius = clamp(height * mix(0.3, 0.17, conifer), 0.0022, 0.0048) * (0.85 + 0.3 * b.y);
+    if (clearedObject(center, radius, anchor + height)) continue;
     float vertical = height * mix(0.4, 0.46, conifer);
     vec3 local = vec3((g.x - center.x) * scale, elevation - anchor - (height - vertical), g.y - center.y);
     vec3 r = vec3(radius, vertical, radius);
@@ -167,11 +177,13 @@ float houseDistance(vec2 g, float elevation, float scale, out float roof, out ve
   vec2 extent = vec2(0.0035 + 0.0015 * a.w, 0.005 + 0.0025 * b.x);
   float wall = 0.0045 + 0.0025 * b.y;
   float rise = extent.x * (0.55 + 0.35 * b.z);
+  float anchor = anchorHeight(center);
+  if (clearedObject(center, length(extent), anchor + wall + rise)) return bound;
   vec2 local = vec2((g.x - center.x) * scale, g.y - center.y);
   if (b.w > 0.7) local = local.yx;
   vec2 q = abs(local) - extent;
   float horizontal = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
-  float above = elevation - anchorHeight(center);
+  float above = elevation - anchor;
   float top = wall + rise * max(0.0, 1.0 - abs(local.x) / extent.x);
   // Roof slopes stay below 0.9, so 0.7 × vertical distance is a bound.
   float vertical = max((above - top) * 0.7, -above - 0.008);

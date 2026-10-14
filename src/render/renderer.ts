@@ -146,6 +146,7 @@ export class HabitatRenderer {
         uWindowTransmission: { value: settings.windowTransmission },
         uTerrainHeight: { value: settings.terrainHeight }, uAerosol: { value: settings.aerosol },
         uTerrain:{value:null},uAnchorTerrain:{value:null},uCachedTerrain:{value:true},uLandCover:{value:null},uLandUse:{value:true},
+        uObjectClearing:{value:new THREE.Vector3()},
         uSolarPower: { value: settings.solarPower },
         uAerosolPhase:{value:this.particleTextures[0]},uCloudPhase:{value:this.particleTextures[1]},
         uAerosolScale:{value:1},uReferenceIlluminance:{value:SOLAR_ILLUMINANCE},uLampScale:{value:LAMP_RADIANCE_SCALE},
@@ -311,7 +312,7 @@ export class HabitatRenderer {
 
   private resetAccumulation() {this.samples=0;this.historySamples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.accumulation++;}
 
-  /** The cache holds only scattered light from clouds; it does not depend on the camera. */
+  /** The cache holds only scattered light from clouds. */
   private get cacheActive() {
     const u=this.material.uniforms;
     return u.uClouds.value && u.uAtmosphere.value && u.uPressure.value>0 && this.cloudMass>0 && u.uDiagnostic.value===0;
@@ -326,6 +327,19 @@ export class HabitatRenderer {
   private resetSurface() {
     this.surfaceSample=0;this.surfaceHistory=0;this.surfaceBand=0;
     this.clearTargets(this.surfaceTargets);
+  }
+
+  private updateObjectClearing() {
+    const p=this.camera.position,clearing=this.material.uniforms.uObjectClearing.value;
+    const walking=this.settings.view==='ground';
+    const angle=(Math.atan2(p.y,p.x)+Math.PI*1.5)%(2*Math.PI);
+    const x=walking ? angle*this.settings.radius : 0,y=walking ? p.z : 0,radius=walking ? 0.05 : 0;
+    if (clearing.x===x && clearing.y===y && clearing.z===radius) return;
+    clearing.set(x,y,radius);this.resetAccumulation();
+    // All rays see the same clearing, including shadows and cloud lighting.
+    // The clear-air surface atlas omits objects already; cloud-lit atlases
+    // must restart when the changed geometry invalidates the cloud cache.
+    if (this.cacheActive) {this.resetCache();this.resetSurface();}
   }
 
   private clearTargets(targets:THREE.WebGLRenderTarget[]) {
@@ -431,6 +445,7 @@ export class HabitatRenderer {
       if(gl.clientWaitSync(this.frameFence,0,0)===gl.TIMEOUT_EXPIRED) return false;
       gl.deleteSync(this.frameFence);this.frameFence=null;
     }
+    this.updateObjectClearing();
     this.preview.prepare(this.renderer);
     this.mode=interacting || performance.now()-this.lastMovement<200 ? 'preview' : 'path';
     const natural=this.material.uniforms.uDiagnostic.value===0;

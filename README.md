@@ -30,6 +30,9 @@ fly, Q/E down/up, arrows to look, Shift to go faster. *Ground* stands you on
 the land at eye height (1.7 m): WASD and scroll walk over the terrain, E lifts
 you above it and Q sets you back down. *Valley*, *Overlook* and *Axis* are
 free-flight viewpoints; the circular arrow recenters.
+For a clear view at eye height, *Ground* removes trees and buildings whose
+footprints touch a 50 m circle around you. This clearing follows you as you
+walk; free-flight views restore the objects.
 
 While you move, a fast raster preview is shown, lit by light the path tracer
 has already computed. About 200 ms after you stop, the path tracer takes over
@@ -193,8 +196,8 @@ therefore use a cache of the light that has already scattered at least once:
   always sampled exactly.
 - **The cache fills itself.** Each iteration traces a path from every cell,
   64 droplet scatterings long, which ends in the previous cache. Repeating
-  this converges to a consistent field. The camera does not affect the cache,
-  so moving around keeps it.
+  this converges to a consistent field. Moving around keeps it unless the
+  Ground observer's clearing changes the scene geometry.
 - **Optically deep cloud** (where light travels less than about 200 m between
   direction changes, everywhere in a cell's neighborhood) is solved with the
   diffusion equation instead. Light flows between the two regions through
@@ -206,7 +209,8 @@ and makes cloudy scenes about 8× faster per sample.
 
 After a reset (new weather, a changed setting) the cache needs a few hundred
 iterations, 20–40 s on a desktop GPU, to settle; until then clouds look
-blotchy. Moving the camera does not reset it.
+blotchy. Walking in Ground view also resets it as the object clearing moves;
+looking around and free flight keep it.
 
 ### Surfaces: the surface light cache
 
@@ -224,7 +228,8 @@ therefore use a cache too:
   themselves, in cosine-distributed directions; these paths do not read the
   atlas, so it has no feedback. After a change it takes an eighth of the
   tracing work until 64 samples, and it also fills while you move; then it
-  refines with a thirty-second. Moving the camera does not reset it.
+  refines with a thirty-second. Moving the camera keeps it, except when the
+  Ground clearing resets the cloud lighting it depends on.
 - **Camera paths** go on from their first surface without roulette. At their
   second surface, sunlight is sampled exactly and the rest comes from the
   atlas. Until the atlas has 64 samples, the image is a running average, so
