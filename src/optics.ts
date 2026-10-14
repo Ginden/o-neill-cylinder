@@ -71,11 +71,16 @@ export function glassPlate(cosine: number,bulkTransmission:number) {
   const ct = Math.sqrt(1-(1-c*c)/(GLASS_IOR*GLASS_IOR));
   const rs = (c-GLASS_IOR*ct)/(c+GLASS_IOR*ct);
   const rp = (GLASS_IOR*c-ct)/(GLASS_IOR*c+ct);
-  const f = (rs*rs+rp*rp)/2;
   const attenuation=bulkTransmission**(1/ct);
-  const denominator=Math.max(1e-12,1-f*f*attenuation*attenuation);
-  return {reflectance:f+(1-f)**2*f*attenuation*attenuation/denominator,
-    transmission:(1-f)**2*attenuation/denominator};
+  // Internal bounces preserve polarization. Average the two complete plate
+  // responses, not the interface reflectances before the nonlinear sum.
+  let reflectance=0,transmission=0;
+  for (const f of [rs*rs,rp*rp]) {
+    const denominator=Math.max(1e-12,1-f*f*attenuation*attenuation);
+    reflectance+=(f+(1-f)**2*f*attenuation*attenuation/denominator)/2;
+    transmission+=(1-f)**2*attenuation/denominator/2;
+  }
+  return {reflectance,transmission};
 }
 
 export function glassReflectance(cosine:number) {

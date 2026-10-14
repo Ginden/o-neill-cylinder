@@ -3,6 +3,7 @@ import { defaults } from '../src/settings';
 import { directIllumination } from '../src/physics';
 import { dot,glassPlate,glassReflectance,intersectMirror,mirrorGeometry,paneRouteSources,reflect,sunDirection,windowOpening } from '../src/optics';
 import { cloudMajorants } from '../src/render/majorant';
+import { plateReference } from './glass-reference';
 
 describe('explicit solar optics',()=>{
   it('redirects one axial Sun according to each panel normal and deployment',()=>{
@@ -45,6 +46,17 @@ describe('explicit solar optics',()=>{
     const absorbing=glassPlate(1,0.8);
     expect(absorbing.reflectance+absorbing.transmission).toBeLessThan(1);
     expect(glassPlate(0.1,0.8).transmission).toBeLessThan(absorbing.transmission);
+  });
+  it('matches a polarized internal-ray walk for unpolarized light through a plate',()=>{
+    for (const angle of [0,30,60,75,80,85,89,89.9,90]) for (const bulk of [0,0.2,0.9,1]) {
+      const reference=plateReference(angle,bulk,1.52);
+      for (const side of [-1,1]) {
+        const actual=glassPlate(side*Math.cos(angle*Math.PI/180),bulk);
+        expect(actual.reflectance,`reflection at ${angle}°, bulk ${bulk}`).toBeCloseTo(reference.reflectance,10);
+        expect(actual.transmission,`transmission at ${angle}°, bulk ${bulk}`).toBeCloseTo(reference.transmission,10);
+        expect(actual.reflectance+actual.transmission).toBeLessThanOrEqual(1+1e-12);
+      }
+    }
   });
 });
 

@@ -95,6 +95,18 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser \
 
 Run one renderer at a time: two browsers sharing a GPU measure each other.
 
+To audit glass in a representative view near a land-strip edge, run
+`node scripts/audit-glass.mjs` against the dev server. It writes PNGs and raw
+luminance statistics to `.local/glass-audit/`: corrected glass, the previous
+plate formula, camera-visible pane reflections disabled, and a surface-cache
+comparison. The default is 1280 × 720 at 256 samples, fixed exposure, no
+denoising or clouds. The first three use exact paths; the last freezes the
+surface atlas after 256 samples. `AUDIT_WIDTH`, `AUDIT_HEIGHT`, `AUDIT_SAMPLES`,
+`AUDIT_OUTPUT` and `AUDIT_URL` override the run; `AUDIT_SETTINGS` accepts an
+exported experiment JSON file (physical settings only). JSON includes the
+camera, settings, GPU, block means and per-sample variances. Luminance is
+CIE Y relative to `SOLAR_ILLUMINANCE`, before display exposure or tone mapping.
+
 ## How it works
 
 ### Threads
@@ -119,6 +131,8 @@ the desktop and the interface stay responsive while the path tracer runs.
   re-aim them.
 - **Panes** are thin BK7 glass plates: wavelength-dependent Fresnel reflection
   at both surfaces, repeated internal reflection, adjustable absorption.
+  Internal bounces preserve s and p polarization separately; the complete
+  plate responses are then averaged for unpolarized incident light.
 - **Land**: procedural valleys with a river, road, fields, hedgerows,
   woodland and villages. Trees (ellipsoid crowns) and houses (gabled boxes)
   are real geometry: they cast shadows and block light, not just textures.
@@ -126,6 +140,15 @@ the desktop and the interface stay responsive while the path tracer runs.
 - **Materials** are diffuse spectra defined at 440, 550 and 680 nm (assumed,
   not measured). The river is a rough dielectric mirror over dark water.
 - **Night**: settlements have 2 cd/m², 2800 K lamps; there are no stars.
+
+Windows can look mirror-like near a land-strip edge. For uncoated glass with
+index 1.52 and the default bulk transmission of 0.9, plate reflectance rises
+from 7.4% at normal incidence to 14.2% at 60°, 35.1% at 75°, 50.1% at 80° and
+70.6% at 85° (angles from the pane normal). Even a weak reflection of sunlit
+land can dominate the black space behind the window. Shortening the air
+column reduces the blue haze, but leaves the reflected interior visible.
+The [Fresnel and thin-dielectric model](https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF)
+explains this angular dependence; coatings and pane roughness are not modeled.
 
 ### Light transport
 
@@ -258,6 +281,28 @@ profile, the axis is at about 798 hPa.
 - Ratio and delta tracking reproduce Beer–Lambert transmittance, per
   wavelength (browser tests).
 - Rough water conserves energy and is reciprocal (browser test).
+- Glass coefficients agree with an independent explicit s/p internal-ray
+  walk over 0–90°, including absorbing and lossless plates. GPU tests also
+  check energy conservation and the actual reflection/transmission path
+  sampler from both sides, including grazing rays and their geometric offsets.
+  Averaging interface reflectances before summing internal bounces used to
+  give 37.0% rather than 35.1% reflection at 75° and bulk transmission 0.9.
+- A representative edge view at 1280 × 720 and 256 samples on an RTX 5070,
+  at the default 4 km radius, with no cloud mass, fixed exposure and no
+  denoising: correcting that plate formula lowers whole-image luminance by
+  0.93%, and by about 3.2% in a
+  window-dominated horizontal band 56–67% down the image. In that band,
+  suppressing camera-visible pane reflections removes 66.8% of the light.
+  The surface cache at 256 atlas samples agrees with exact paths to 0.12%
+  in the image mean, with half the per-sample block variance; 14 of 144 blocks
+  differ by more than three estimated standard errors, so agreement in the
+  mean does not imply local exactness. Repeating at a 17.5 km radius with
+  the other physical defaults gives a 0.53% image-mean correction, 1.4% in
+  the same window band, and up to 62% of an 80 × 80-pixel window block's light
+  from pane reflections. Its cache image mean differs from exact by −0.03%.
+  Reproduce with `scripts/audit-glass.mjs` (set `AUDIT_SETTINGS` to a JSON
+  containing `{"radius":17.5}` for the second run). These are representative
+  cameras, not reconstructions from screenshots.
 - Four-wavelength paths agree with the earlier one-wavelength estimator in
   every image region of clear, hazy, overhead, cloudy and night scenes at 1024
   samples. At one sample per pixel, color error in clear air is 4.5× lower.
@@ -287,9 +332,10 @@ profile, the axis is at about 798 hPa.
 0.01i) and water (1.333); procedural trees and houses; a smooth solar spectrum
 without absorption lines or limb darkening.
 
-**Not modeled:** polarization, atmospheric refraction, non-spherical
-aerosols, measured surface reflectance (BRDFs), glass thickness, stars, rain
-or ice.
+**Not modeled:** polarization between separate interactions (each plate
+handles s/p internally for unpolarized input), atmospheric refraction,
+non-spherical aerosols, measured surface reflectance (BRDFs), glass thickness,
+stars, rain or ice.
 
 **Numerical limits:** cloud-free paths stop after 64 events and cloud paths
 after 1024; the cloud cache approximates high-order scattering in cloud and

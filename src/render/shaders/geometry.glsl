@@ -23,11 +23,14 @@ void glassPlate(float cosine,out vec4 reflectance,out vec4 transmittance) {
   vec4 ct = sqrt(1.0-(1.0-c*c)/(eta*eta));
   vec4 rs = (c-eta*ct)/(c+eta*ct);
   vec4 rp = (eta*c-ct)/(eta*c+ct);
-  vec4 f = 0.5*(rs*rs+rp*rp);
+  vec4 fs=rs*rs,fp=rp*rp;
   vec4 attenuation=pow(vec4(uWindowTransmission),1.0/ct);
-  vec4 denominator=max(vec4(1e-8),1.0-f*f*attenuation*attenuation);
-  reflectance=f+(1.0-f)*(1.0-f)*f*attenuation*attenuation/denominator;
-  transmittance=(1.0-f)*(1.0-f)*attenuation/denominator;
+  // Preserve s/p through the internal bounces, then average for unpolarized
+  // incident light. Averaging first biases oblique plate reflection.
+  vec4 ts=(1.0-fs)*(1.0-fs)*attenuation/max(vec4(1e-8),1.0-fs*fs*attenuation*attenuation);
+  vec4 tp=(1.0-fp)*(1.0-fp)*attenuation/max(vec4(1e-8),1.0-fp*fp*attenuation*attenuation);
+  reflectance=0.5*(fs+fp+attenuation*(fs*ts+fp*tp));
+  transmittance=0.5*(ts+tp);
 }
 
 // Bound on the baked terrain slope |∇h|. A heightfield cannot rise toward a ray
