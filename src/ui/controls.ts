@@ -102,7 +102,7 @@ export function parseSettings(input: unknown): Settings {
   }
   const enums = {
     lightMode: ['mirrors','sun'], quality: ['fast','balanced','high'],
-    diagnostic: ['natural','transmission','density','cloud'], view: ['valley','axis','overlook']
+    diagnostic: ['natural','transmission','density','cloud'], view: ['ground','valley','axis','overlook']
   } as const;
   for (const [key, allowed] of Object.entries(enums)) {
     if (values[key] !== undefined) {

@@ -14,14 +14,6 @@ import { SOLAR_ILLUMINANCE } from './solar';
 const fullscreenVertex='void main(){gl_Position=vec4(position.xy,0.0,1.0);}';
 type Uniforms=Record<string,THREE.IUniform>;
 
-/** Ground atlas size: roughly square texels, at most `limit` on a side. Both
- * sides are multiples of 32, so each occupancy mip texel covers exactly the
- * 2^level × 2^level base texels below it. */
-export function atlasSize(radius:number,length:number,limit:number):[number,number] {
-  const height=Math.round(limit*Math.min(1,length/(2*Math.PI*radius))/32)*32;
-  return [limit,Math.max(256,height)];
-}
-
 /** A raster navigation view of the wall and endcaps; no camera paths are traced
  * while the camera moves. Direct sunlight is baked analytically; the renderer
  * supplies the light that has scattered or reflected at least once, traced into

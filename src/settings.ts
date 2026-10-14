@@ -30,7 +30,7 @@ export interface Settings {
   paused: boolean;
   diagnostic: 'natural' | 'transmission' | 'density' | 'cloud';
   quality: 'fast' | 'balanced' | 'high';
-  view: 'valley' | 'axis' | 'overlook';
+  view: 'ground' | 'valley' | 'axis' | 'overlook';
   seed: number;
 }
 

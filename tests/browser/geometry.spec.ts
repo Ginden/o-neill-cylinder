@@ -140,3 +140,41 @@ test('marches terrain, trees and houses without skipping geometry',async({page})
   expect(result.rays).toBeGreaterThan(600);
   expect(result.missed).toBe(0);
 });
+
+test('stands the ground view on the surface the GPU draws',async({page})=>{
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const threeModule='/node_modules/three/build/three.module.js',rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts',terrainModule='/src/terrain.ts';
+    const THREE=await import(threeModule),{HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule);
+    const {surfaceHeight,terrainAtlasSize,windowAt}=await import(terrainModule);
+    const settings={...defaults,quality:'fast',clouds:false};
+    const renderer=new HabitatRenderer(document.createElement('canvas'),settings);
+    renderer.resize(32,32,'fast',1);renderer.render(true);
+    // Filtered terrain atlas at land points, as the tracer and preview read it.
+    const count=128,points=new Float32Array(count*4),cpu:number[]=[];
+    // Golden-ratio sequence over the wall, skipping window bands.
+    for(let k=0;cpu.length<count;k++) {
+      const theta=(k*2.399963)%(2*Math.PI),z=((k*0.618034)%1-0.5)*settings.length;
+      if(windowAt(theta,settings)) continue;
+      points.set([((theta-Math.PI/2)/(2*Math.PI)%1+1)%1,z/settings.length+0.5,0,1],cpu.length*4);
+      cpu.push(surfaceHeight(theta,z,settings,terrainAtlasSize(settings)));
+    }
+    const input=new THREE.DataTexture(points,count,1,THREE.RGBAFormat,THREE.FloatType);input.needsUpdate=true;
+    const target=new THREE.WebGLRenderTarget(count,1,{type:THREE.FloatType,depthBuffer:false});
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,uniforms:{uPoints:{value:input},uTerrain:{value:renderer.preview.terrain.texture}},
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',
+      fragmentShader:'uniform sampler2D uPoints;uniform sampler2D uTerrain;out vec4 o;void main(){o=vec4(textureLod(uTerrain,texelFetch(uPoints,ivec2(gl_FragCoord.xy),0).xy,0.0).r,0,0,1);}'});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    renderer.renderer.setRenderTarget(target);renderer.renderer.render(scene,new THREE.Camera());
+    const gpu=new Float32Array(count*4);renderer.renderer.readRenderTargetPixels(target,0,0,count,1,gpu);
+    let maximum=0,relief=0;
+    for(let i=0;i<count;i++) {maximum=Math.max(maximum,Math.abs(cpu[i]-gpu[i*4]));relief=Math.max(relief,cpu[i]);}
+    const error=renderer.renderer.getContext().getError();
+    plane.dispose();material.dispose();target.dispose();input.dispose();renderer.dispose();
+    return {maximum,relief,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.relief).toBeGreaterThan(0.05);
+  // Kilometres: a few centimetres against a 1.7 m eye height.
+  expect(result.maximum).toBeLessThan(5e-5);
+});

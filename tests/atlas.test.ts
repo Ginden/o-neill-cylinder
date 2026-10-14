@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atlasSize } from '../src/render/preview';
+import { atlasSize } from '../src/terrain';
 
 describe('ground atlas', () => {
   it('keeps occupancy mip texels aligned with the base texels below them', () => {

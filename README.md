@@ -24,8 +24,10 @@ cache. Software rendering works but is slow.
 ## Using the lab
 
 **Moving around.** Drag to look, scroll to fly. Click the view, then WASD to
-fly, Q/E down/up, arrows to look, Shift to go faster. *Ground*, *Overlook*
-and *Axis* jump to preset viewpoints; the circular arrow recenters.
+fly, Q/E down/up, arrows to look, Shift to go faster. *Ground* stands you on
+the land at eye height (1.7 m): WASD and scroll walk over the terrain, E lifts
+you above it and Q sets you back down. *Valley*, *Overlook* and *Axis* are
+free-flight viewpoints; the circular arrow recenters.
 
 While you move, a fast raster preview is shown, lit by light the path tracer
 has already computed. About 200 ms after you stop, the path tracer takes over

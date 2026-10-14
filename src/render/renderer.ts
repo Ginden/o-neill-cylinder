@@ -20,7 +20,8 @@ import spectrum from './shaders/spectrum.glsl?raw';
 import cache from './shaders/cache.glsl?raw';
 import cacheDiffusion from './shaders/cache-diffusion.glsl?raw';
 import guides from './shaders/guides.glsl?raw';
-import { atlasSize,NavigationPreview } from './preview';
+import { NavigationPreview } from './preview';
+import { terrainAtlasSize } from '../terrain';
 import { DisplayDenoiser,ExposureMeter } from './postprocess';
 import { CACHE_ANGULAR,CACHE_AXIAL,CACHE_RADIAL,diffusionCells } from './cache';
 import type { WeatherField } from './cache';
@@ -284,7 +285,7 @@ export class HabitatRenderer {
     this.displayMaterial.uniforms.uAdaptive.value=s.adaptiveExposure;
     this.denoise=s.denoise;
     const terrainState=JSON.stringify([s.radius,s.length,s.terrainHeight,s.windowFraction,s.quality]);
-    if (terrainState!==this.terrainState) this.preview.resizeAtlas(...atlasSize(s.radius,s.length,s.quality==='fast' ? 2048 : 4096));
+    if (terrainState!==this.terrainState) this.preview.resizeAtlas(...terrainAtlasSize(s));
     const physicalState=JSON.stringify([scalar,particleState,s.sunAzimuth,s.sunElevation,s.mirrorTilt,s.lightMode,s.quality,s.diagnostic]);
     this.preview.invalidate(terrainState!==this.terrainState,physicalState!==this.physicalState);
     this.terrainState=terrainState;
