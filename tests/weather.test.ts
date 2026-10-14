@@ -28,6 +28,38 @@ describe('moist convection solver', () => {
     expect(evolved.stats.maxWind).toBeGreaterThan(0.1);
     expect(Array.from(evolved.data).every(Number.isFinite)).toBe(true);
   });
+  it('advects distinct linear temperature and vapor profiles along the same wind', () => {
+    const solver = new WeatherSolver({ ...defaults, gravity:0, lapseRate:0, evaporation:0, surfaceHeating:0 });
+    const temperature = (x:number,y:number,z:number) => 0.2 + 0.04*x + 0.02*y - 0.003*z;
+    const vapor = (x:number,y:number,z:number) => 0.001 + 0.00001*x - 0.00002*y + 0.00003*z;
+    for (let i = 0; i < solver.count; i++) {
+      if (!solver.active[i]) continue;
+      const x = i % solver.nx, y = Math.floor(i / solver.nx) % solver.ny, z = Math.floor(i / (solver.nx*solver.ny));
+      solver.u[i] = 10;solver.v[i] = -5;solver.w[i] = 20;
+      solver.temperature[i] = temperature(x,y,z);solver.vapor[i] = vapor(x,y,z);solver.cloud[i] = 0;
+    }
+    const dt = solver.step(4);
+    for (const [x,y,z] of [[12,13,5],[8,10,30],[14,9,40]]) {
+      const i = x + solver.nx*(y + solver.ny*z);
+      const source = [x-10*dt/solver.dx,y+5*dt/solver.dy,z-20*dt/solver.dz] as const;
+      expect(solver.temperature[i]).toBeCloseTo(temperature(...source)*Math.exp(-dt/2400), 6);
+      expect(solver.vapor[i]).toBeCloseTo(vapor(...source), 9);
+    }
+  });
+  it('preserves uniform vapor when backtraces touch the sealed wall', () => {
+    const solver = new WeatherSolver({ ...defaults, gravity:0, lapseRate:0, evaporation:0, surfaceHeating:0 });
+    for (let i = 0; i < solver.count; i++) {
+      // Solid cells deliberately differ: they must not dilute active parcels.
+      solver.vapor[i] = solver.active[i] ? 0.002 : 0;
+      solver.cloud[i] = 0;solver.u[i] = 30;solver.v[i] = -20;solver.w[i] = 10;
+    }
+    solver.step(4);
+    let maximumError = 0;
+    for (let i = 0; i < solver.count; i++) {
+      if (solver.active[i]) maximumError = Math.max(maximumError, Math.abs(solver.vapor[i] - 0.002));
+    }
+    expect(maximumError).toBeLessThan(1e-9);
+  });
   it('reduces divergence when projecting an arbitrary velocity field', () => {
     const solver = new WeatherSolver({ ...defaults,wind:0,humidity:0 });
     for (let i = 0; i < solver.count; i++) {

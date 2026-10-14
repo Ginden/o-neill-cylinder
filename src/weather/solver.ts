@@ -106,32 +106,34 @@ export class WeatherSolver {
     return x + this.nx * (y + this.ny * z);
   }
 
-  private sample(field: Float32Array, x: number, y: number, z: number, fallback: number) {
-    x = Math.max(0, Math.min(this.nx - 1.001, x));
-    y = Math.max(0, Math.min(this.ny - 1.001, y));
-    z = Math.max(0, Math.min(this.nz - 1.001, z));
-    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
-    const fx = x - ix, fy = y - iy, fz = z - iz;
-    let sum = 0, weights = 0;
-    for (let k = 0; k < 2; k++) for (let j = 0; j < 2; j++) for (let l = 0; l < 2; l++) {
-      const i = this.index(ix + l, iy + j, iz + k);
-      if (!this.active[i]) continue;
-      const weight = (l ? fx : 1 - fx) * (j ? fy : 1 - fy) * (k ? fz : 1 - fz);
-      sum += field[i] * weight;
-      weights += weight;
-    }
-    return weights > 0 ? sum / weights : field[fallback];
-  }
-
   private advect(dt: number) {
-    const fields = [this.u, this.v, this.w, this.temperature, this.vapor, this.cloud];
+    const { u, v, w, temperature, vapor, cloud } = this;
+    const [nextU, nextV, nextW, nextTemperature, nextVapor, nextCloud] = this.scratch;
     for (const i of this.cells) {
-      const x = i % this.nx - this.u[i] * dt / this.dx;
-      const y = Math.floor(i / this.nx) % this.ny - this.v[i] * dt / this.dy;
-      const z = Math.floor(i / (this.nx * this.ny)) - this.w[i] * dt / this.dz;
-      for (let f = 0; f < fields.length; f++) this.scratch[f][i] = this.sample(fields[f], x, y, z, i);
+      const x = Math.max(0, Math.min(this.nx - 1.001, i % this.nx - u[i] * dt / this.dx));
+      const y = Math.max(0, Math.min(this.ny - 1.001, Math.floor(i / this.nx) % this.ny - v[i] * dt / this.dy));
+      const z = Math.max(0, Math.min(this.nz - 1.001, Math.floor(i / (this.nx * this.ny)) - w[i] * dt / this.dz));
+      const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+      const fx = x - ix, fy = y - iy, fz = z - iz;
+      let sumU = 0, sumV = 0, sumW = 0, sumTemperature = 0, sumVapor = 0, sumCloud = 0, weights = 0;
+      // All six fields follow the same backtrace and masked interpolation stencil.
+      for (let k = 0; k < 2; k++) for (let j = 0; j < 2; j++) for (let l = 0; l < 2; l++) {
+        const source = this.index(ix + l, iy + j, iz + k);
+        if (!this.active[source]) continue;
+        const weight = (l ? fx : 1 - fx) * (j ? fy : 1 - fy) * (k ? fz : 1 - fz);
+        sumU += u[source] * weight;sumV += v[source] * weight;sumW += w[source] * weight;
+        sumTemperature += temperature[source] * weight;sumVapor += vapor[source] * weight;sumCloud += cloud[source] * weight;
+        weights += weight;
+      }
+      nextU[i] = weights > 0 ? sumU / weights : u[i];
+      nextV[i] = weights > 0 ? sumV / weights : v[i];
+      nextW[i] = weights > 0 ? sumW / weights : w[i];
+      nextTemperature[i] = weights > 0 ? sumTemperature / weights : temperature[i];
+      nextVapor[i] = weights > 0 ? sumVapor / weights : vapor[i];
+      nextCloud[i] = weights > 0 ? sumCloud / weights : cloud[i];
     }
-    for (let f = 0; f < fields.length; f++) fields[f].set(this.scratch[f]);
+    u.set(nextU);v.set(nextV);w.set(nextW);
+    temperature.set(nextTemperature);vapor.set(nextVapor);cloud.set(nextCloud);
   }
 
   private condense() {
@@ -217,11 +219,15 @@ export class WeatherSolver {
   }
 
   private pressureProduct(p: Float32Array, out: Float32Array) {
+    let dot = 0;
     for (const i of this.cells) {
       let value = 0;
       for (let j = this.pressureOffsets[i]; j < this.pressureOffsets[i + 1]; j++) value += this.pressureValues[j] * p[this.pressureColumns[j]];
       out[i] = value;
+      // CG needs p·A p as well; use the stored Float32 result, as in a separate dot pass.
+      dot += p[i] * out[i];
     }
+    return dot;
   }
 
   project() {
@@ -247,9 +253,7 @@ export class WeatherSolver {
       rho += residual[i] * direction[i];
     }
     for (let iteration = 0; iteration < 128 && squaredResidual > initial * 1e-8; iteration++) {
-      let denominator = 0;
-      this.pressureProduct(direction, product);
-      for (const i of this.cells) denominator += direction[i] * product[i];
+      const denominator = this.pressureProduct(direction, product);
       const alpha = rho / denominator;
       let nextRho = 0;
       squaredResidual = 0;
@@ -295,6 +299,8 @@ export class WeatherSolver {
     const s = this.settings;
     // Integrate Coriolis exactly: no spurious kinetic energy from Euler stepping.
     const cos = Math.cos(2 * omega * dt), sin = Math.sin(2 * omega * dt);
+    const damping = Math.exp(-dt / 1200), thermalDamping = Math.exp(-dt / 2400);
+    const dryLapse = s.gravity * EARTH_GRAVITY / HEAT_CAPACITY;
     for (const i of this.cells) {
       const r = Math.hypot(this.px[i], this.py[i]);
       const nx = this.px[i] / Math.max(r, 1), ny = this.py[i] / Math.max(r, 1);
@@ -303,14 +309,12 @@ export class WeatherSolver {
       const buoyancy = s.gravity * EARTH_GRAVITY * radialFraction
         * (this.temperature[i] / this.baseT[i] + 0.61 * (this.vapor[i] - this.baseVapor[i]) - this.cloud[i]);
       const u = this.u[i], v = this.v[i];
-      const damping = Math.exp(-dt / 1200);
       this.u[i] = (cos * u + sin * v - nx * buoyancy * dt) * damping;
       this.v[i] = (cos * v - sin * u - ny * buoyancy * dt) * damping;
       this.w[i] *= damping;
-      const dryLapse = s.gravity * EARTH_GRAVITY / HEAT_CAPACITY;
       this.temperature[i] += dt * (s.surfaceHeating * this.heat[i]
         - (dryLapse - s.lapseRate / 1000) * inwardWind * radialFraction);
-      this.temperature[i] *= Math.exp(-dt / 2400);
+      this.temperature[i] *= thermalDamping;
       if (s.pressure > 0) {
         const deficit = Math.max(0, saturationMixingRatio(this.baseT[i] + this.temperature[i], this.baseP[i]) - this.vapor[i]);
         this.vapor[i] += Math.min(deficit, s.evaporation * this.surface[i] * dt);

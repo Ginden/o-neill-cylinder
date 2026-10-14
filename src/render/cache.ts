@@ -20,17 +20,45 @@ export function cacheRadii(i:number,radius:number) {
 
 export interface WeatherField {data:Float32Array;dimensions:readonly [number,number,number]}
 
-/** Liquid water (kg/m³) at a point (km), trilinear like the GPU's clamped linear texture. */
-function liquidAt(weather:WeatherField,s:Settings,x:number,y:number,z:number) {
-  const [nx,ny,nz]=weather.dimensions;
+/** The cylindrical cache and weather texture both scale with the habitat.
+ * Their interpolation stencil depends only on the weather grid dimensions.
+ * Store XY and Z separately: about 146 KiB instead of 18 MiB for eight full
+ * indices and double-precision weights at every cache cell. */
+function makeWeatherSampling(dimensions:WeatherField['dimensions']) {
+  const [nx,ny,nz]=dimensions;
+  const xyIndices=new Uint32Array(CACHE_RADIAL*CACHE_ANGULAR*4),xyWeights=new Float64Array(xyIndices.length);
+  const zIndices=new Uint32Array(CACHE_AXIAL*2),zWeights=new Float64Array(zIndices.length);
   const coordinate=(value:number,n:number)=>Math.min(n-1,Math.max(0,value*n-0.5));
-  const gx=coordinate(x/(2*s.radius)+0.5,nx),gy=coordinate(y/(2*s.radius)+0.5,ny),gz=coordinate(z/s.length+0.5,nz);
-  const ix=Math.min(nx-2,Math.floor(gx)),iy=Math.min(ny-2,Math.floor(gy)),iz=Math.min(nz-2,Math.floor(gz));
-  const fx=gx-ix,fy=gy-iy,fz=gz-iz;
+  for (let i=0;i<CACHE_RADIAL;i++) {
+    const {outer,inner}=cacheRadii(i,1),r=(outer+inner)/2;
+    for (let j=0;j<CACHE_ANGULAR;j++) {
+      const theta=(j+0.5)/CACHE_ANGULAR*2*Math.PI;
+      const gx=coordinate(r*Math.cos(theta)/2+0.5,nx),gy=coordinate(r*Math.sin(theta)/2+0.5,ny);
+      const ix=Math.min(nx-2,Math.floor(gx)),iy=Math.min(ny-2,Math.floor(gy)),fx=gx-ix,fy=gy-iy;
+      for (let y=0;y<2;y++) for (let x=0;x<2;x++) {
+        const offset=(i*CACHE_ANGULAR+j)*4+y*2+x;
+        xyIndices[offset]=((ix+x)+nx*(iy+y))*4;
+        xyWeights[offset]=(x ? fx : 1-fx)*(y ? fy : 1-fy);
+      }
+    }
+  }
+  for (let k=0;k<CACHE_AXIAL;k++) {
+    const gz=coordinate((k+0.5)/CACHE_AXIAL,nz),iz=Math.min(nz-2,Math.floor(gz)),fz=gz-iz;
+    for (let z=0;z<2;z++) {
+      zIndices[k*2+z]=(iz+z)*nx*ny*4;
+      zWeights[k*2+z]=z ? fz : 1-fz;
+    }
+  }
+  return {dimensions:[nx,ny,nz],xyIndices,xyWeights,zIndices,zWeights};
+}
+let weatherSampling:ReturnType<typeof makeWeatherSampling>|undefined;
+
+/** Liquid water (kg/m³), trilinear like the GPU's clamped linear texture. */
+function liquidAt(data:Float32Array,sampling:ReturnType<typeof makeWeatherSampling>,xy:number,z:number) {
+  const {xyIndices,xyWeights,zIndices,zWeights}=sampling;
   let value=0;
-  for (let k=0;k<2;k++) for (let j=0;j<2;j++) for (let i=0;i<2;i++) {
-    const w=(i ? fx : 1-fx)*(j ? fy : 1-fy)*(k ? fz : 1-fz);
-    value+=w*weather.data[((ix+i)+nx*((iy+j)+ny*(iz+k)))*4];
+  for (let k=0;k<2;k++) for (let j=0;j<4;j++) {
+    value+=xyWeights[xy*4+j]*zWeights[z*2+k]*data[xyIndices[xy*4+j]+zIndices[z*2+k]];
   }
   return value;
 }
@@ -48,21 +76,33 @@ export function diffusionCells(weather:WeatherField|undefined,s:Settings,populat
   const aerosolScale=s.aerosol/populations[0].greenExtinction;
   const aerosol=bins.map(bin=>row(populations[0],bin)),cloud=bins.map(bin=>row(populations[1],bin));
   const rayleigh=CACHE_WAVELENGTHS.map(rayleighPerKm);
+  let sampling:typeof weatherSampling;
+  if (weather && s.clouds) {
+    if (!weatherSampling || weather.dimensions.some((n,i)=>n!==weatherSampling!.dimensions[i])) {
+      weatherSampling=makeWeatherSampling(weather.dimensions);
+    }
+    sampling=weatherSampling;
+  }
+  const cloudAbsorption=cloud.map(c=>c.extinction-c.scattering);
+  const cloudScattering=cloud.map(c=>c.scattering*(1-c.g));
+  const airAbsorption=new Float64Array(4),airScattering=new Float64Array(4);
   const thick=new Uint8Array(cells);
   const index=(i:number,j:number,k:number)=>j+CACHE_ANGULAR*(i+CACHE_RADIAL*k);
   for (let i=0;i<CACHE_RADIAL;i++) {
     const {outer,inner}=cacheRadii(i,s.radius),r=(outer+inner)/2;
     const b=backgroundAt(r,s),density=b.pressure/101325*288.15/b.temperature;
+    for (let n=0;n<4;n++) {
+      const a=aerosol[n];
+      airAbsorption[n]=(a.extinction-a.scattering)*aerosolScale*density;
+      airScattering[n]=rayleigh[n]*density+a.scattering*aerosolScale*density*(1-a.g);
+    }
     for (let k=0;k<CACHE_AXIAL;k++) for (let j=0;j<CACHE_ANGULAR;j++) {
-      const theta=(j+0.5)/CACHE_ANGULAR*2*Math.PI,z=((k+0.5)/CACHE_AXIAL-0.5)*s.length;
-      const liquid=weather && s.clouds ? liquidAt(weather,s,r*Math.cos(theta),r*Math.sin(theta),z) : 0;
+      const liquid=sampling && weather ? liquidAt(weather.data,sampling,i*CACHE_ANGULAR+j,k) : 0;
       const cell=index(i,j,k);
       let minimum=Infinity;
       for (let n=0;n<4;n++) {
-        const a=aerosol[n],c=cloud[n];
-        const aerosolScattering=a.scattering*aerosolScale*density,cloudScattering=c.scattering*liquid;
-        const sigmaA=(a.extinction-a.scattering)*aerosolScale*density+(c.extinction-c.scattering)*liquid;
-        const transport=Math.max(1e-6,sigmaA+rayleigh[n]*density+aerosolScattering*(1-a.g)+cloudScattering*(1-c.g));
+        const sigmaA=airAbsorption[n]+cloudAbsorption[n]*liquid;
+        const transport=Math.max(1e-6,sigmaA+airScattering[n]+cloudScattering[n]*liquid);
         diffusion[cell*4+n]=-1/(3*transport);absorption[cell*4+n]=Math.max(0,sigmaA);
         minimum=Math.min(minimum,transport);
       }
@@ -74,12 +114,12 @@ export function diffusionCells(weather:WeatherField|undefined,s:Settings,populat
   for (let i=1;i<CACHE_RADIAL;i++) {
     if (cacheRadii(i-1,s.radius).outer>=clearance) continue;
     for (let k=1;k<CACHE_AXIAL-1;k++) for (let j=0;j<CACHE_ANGULAR;j++) {
-      const neighbors=[index(i,j,k),index(i-1,j,k),index(i,(j+1)%CACHE_ANGULAR,k),index(i,(j+CACHE_ANGULAR-1)%CACHE_ANGULAR,k),index(i,j,k-1),index(i,j,k+1)];
-      if (i<CACHE_RADIAL-1) neighbors.push(index(i+1,j,k));
-      if (neighbors.every(n=>thick[n])) {
-        const cell=index(i,j,k);
-        for (let n=0;n<4;n++) diffusion[cell*4+n]=-diffusion[cell*4+n];
-      }
+      const cell=index(i,j,k);
+      if (!thick[cell] || !thick[cell-CACHE_ANGULAR]
+        || !thick[index(i,(j+1)%CACHE_ANGULAR,k)] || !thick[index(i,(j+CACHE_ANGULAR-1)%CACHE_ANGULAR,k)]
+        || !thick[cell-CACHE_ANGULAR*CACHE_RADIAL] || !thick[cell+CACHE_ANGULAR*CACHE_RADIAL]
+        || (i<CACHE_RADIAL-1 && !thick[cell+CACHE_ANGULAR])) continue;
+      for (let n=0;n<4;n++) diffusion[cell*4+n]=-diffusion[cell*4+n];
     }
   }
   return {diffusion,absorption};

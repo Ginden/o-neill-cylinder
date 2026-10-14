@@ -78,6 +78,7 @@ raw sampling noise.
 | `npm run test:render` | The filter and cloud subset of the browser tests (seconds) |
 | `npm run preview` | Serve the production build |
 | `node scripts/benchmark.mjs` | Measure samples/s and UI cadence on real hardware (see below) |
+| `node scripts/benchmark-weather.mjs` | Measure CPU weather steps and cloud-cache coefficient refreshes |
 
 Browser tests need Chromium: `npx playwright install chromium`, or set
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to an existing one. They run on SwiftShader
@@ -97,6 +98,13 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser \
 ```
 
 Run one renderer at a time: two browsers sharing a GPU measure each other.
+
+The CPU benchmark needs no browser or dev server. It reports medians of three
+warmed runs with dry and humid initial conditions, excluding setup and Mie
+table generation. `BENCHMARK_SOURCE=/path/to/checkout` measures another checkout
+with the same harness. Run comparisons sequentially to avoid CPU contention.
+Its cache timings cover coefficient preparation, not the GPU light solve;
+clear air normally skips that work entirely.
 
 To audit glass in a representative view near a land-strip edge, run
 `node scripts/audit-glass.mjs` against the dev server. It writes PNGs and raw
@@ -205,6 +213,10 @@ therefore use a cache of the light that has already scattered at least once:
 
 Unsaturated air has exactly zero condensate and does not activate this cache.
 Diffusion passes run only when the weather field contains deep cells.
+Coefficient refreshes reuse a 146 KiB lookup table of interpolation indices
+and weights between the weather and cylindrical grids. Air coefficients are
+computed once per radial layer; only the liquid-water contribution varies
+around and along it.
 
 This is an approximation; the fine angular detail of light scattered more
 than twice in cloud is lost. It agrees with exact renders (see *Accuracy*)
@@ -272,10 +284,12 @@ path tracing in the mean (see *Accuracy*) and cuts noise per unit of work
 - saturation adjustment that conserves water and moist static energy.
 
 The pressure solve uses conjugate gradients on a precomputed sparse matrix,
-with the previous solution as its starting point. It targets a 10,000-fold
+with the previous solution as its starting point. Its matrix product and
+dot product share a traversal. The projection targets a 10,000-fold
 reduction in divergence, bounded to 128 iterations per step; extreme grid
 aspect ratios can reach that limit before converging. Fully evaporated parcels
 are handled exactly, so unsaturated air does not accumulate numerical cloud water.
+Advection shares one interpolation stencil across all six transported fields.
 
 Humid air condenses in the colder air near the axis. The *Humid afternoon*
 preset therefore grows a central cloud from its initial conditions; it is
