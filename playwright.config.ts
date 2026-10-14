@@ -2,10 +2,10 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/browser',
-  timeout: 60000,
   // Assertions wait for the observed state (a new sample, a mode switch), not
-  // for a time window: software rendering speed varies between machines. The
-  // test timeout alone guards against hangs.
+  // for a time window: software rendering speed varies between machines and
+  // runs. The test timeout only guards against hangs, so it is generous.
+  timeout: 300000,
   expect: { timeout: 0 },
   workers: 1,
   use: {
