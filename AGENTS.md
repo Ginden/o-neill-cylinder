@@ -18,7 +18,7 @@ O'Neill Atmosphere Lab: a browser spectral path tracer (WebGL2 via three.js, no 
 
 Browser tests: CI uses Playwright's bundled headless Chromium (`npx playwright install chromium`); `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium-browser` uses the system one, which is faster and can hide CI timing problems, so reproduce CI failures with the bundled browser. Don't edit files while they run (Vite hot reload breaks them). For a real GPU in headless Chromium use `--use-angle=gl-egl --ignore-gpu-blocklist --enable-gpu --headless=new`; run one GPU renderer at a time and keep draws bounded.
 
-CI is a self-hosted Gitea, not GitHub (`gh` does not work): `tea actions runs list|view|logs <id> --repo nuc/o-neill-cylinder`. `ci.yml` runs check + browser tests; `image.yaml` builds the static `dist/` Docker image.
+Remotes: `origin` is a self-hosted Gitea; `github` is the public repository (https://github.com/Ginden/o-neill-cylinder). CI runs on Gitea (`gh` does not work): `tea actions runs list|view|logs <id> --repo nuc/o-neill-cylinder`. `ci.yml` runs check + browser tests; `image.yaml` builds the static `dist/` Docker image.
 
 ## Architecture
 

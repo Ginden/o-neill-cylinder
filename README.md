@@ -6,6 +6,8 @@ sealed habitat through windows and mirrors, scattering in its air, haze and
 clouds, plus a coarse weather model that makes those clouds. Everything runs
 locally in the browser; there is no backend, CDN or analytics.
 
+Source: [github.com/Ginden/o-neill-cylinder](https://github.com/Ginden/o-neill-cylinder).
+
 ![Valley view: path-traced farmland, woodland, river and a village inside the cylinder, refined at 256 samples](public/preview.png)
 
 ## Quick start

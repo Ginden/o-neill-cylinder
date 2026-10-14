@@ -15,7 +15,7 @@ export function layout(settings: Settings) {
       <footer class="transport"><button id="pause" class="pause" aria-label="Pause weather">${icon('pause')}</button><div class="clock"><strong id="sim-time">00:00:00</strong><span>SIMULATED TIME</span></div><span class="transport-divider"></span><div class="speed-label" id="speed-label">120×</div><div class="transport-actions"><button id="share" class="text-button">Copy link</button><button id="snapshot" class="secondary">Save image ↗</button></div></footer>
       <div class="toast" id="toast" role="status" hidden></div>
     </section>
-    <aside class="parameters">${renderControls(settings)}<div class="credits"><a href="https://github.com/Ginden" target="_blank" rel="noreferrer">Ginden</a><span>LOCAL SIMULATION · NO ANALYTICS</span><a href="https://michalwadas.pl/privacy/" target="_blank" rel="noreferrer">Privacy</a></div></aside>
+    <aside class="parameters">${renderControls(settings)}<div class="credits"><a href="https://github.com/Ginden" target="_blank" rel="noreferrer">Ginden</a><a href="https://github.com/Ginden/o-neill-cylinder" target="_blank" rel="noreferrer">Source</a><span>LOCAL SIMULATION · NO ANALYTICS</span><a href="https://michalwadas.pl/privacy/" target="_blank" rel="noreferrer">Privacy</a></div></aside>
   </main>
   <dialog id="model-dialog"><button id="close-model" class="dialog-close" aria-label="Close model notes">${icon('close')}</button><span class="eyebrow">PHYSICS & LIMITS</span><h2>The model behind the view.</h2>
     <p>This is an exploratory rendering and moist-convection experiment, not a validated habitat climate prediction.</p>
