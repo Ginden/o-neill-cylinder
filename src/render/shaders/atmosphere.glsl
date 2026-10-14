@@ -22,25 +22,28 @@ layout(location=1) out vec4 outHaze;
 // direction; it ends in the previous cache after `uDropletLimit` droplet
 // scatterings. Repeating this converges to a fixed point: the cached field
 // whose shortened paths reproduce it. The blend averages iterations.
-void updateCache() {
+// Returns false when the cell is finished without a path (deep cells).
+bool startCachePath(out vec3 origin,out vec3 direction,out float density,out int hero,out bool air) {
   ivec2 texel=ivec2(gl_FragCoord.xy);
   int radial=texel.y%CACHE_RADIAL,axial=texel.y/CACHE_RADIAL;
   rngState=uint(texel.x+texel.y*CACHE_ANGULAR)*9781u+uint(uCacheIteration)*6271u+0x2545f491u;
   randomValue();
-  vec4 previous=texelFetch(uCacheFluence,texel,0),previousFlux=texelFetch(uCacheFlux,texel,0);
   // Deep cells follow the diffusion solve instead.
-  if (texelFetch(uCacheDiffusion,texel,0).x>0.0) {outColor=previous;outHaze=previousFlux;return;}
+  if (texelFetch(uCacheDiffusion,texel,0).x>0.0) {
+    outColor=texelFetch(uCacheFluence,texel,0);outHaze=texelFetch(uCacheFlux,texel,0);
+    return false;
+  }
   // Radial bins are uniform in sqrt(depth); sample the bin uniformly by volume.
   float outer=uRadius*(1.0-pow(float(radial)/float(CACHE_RADIAL),2.0));
   float inner=uRadius*(1.0-pow(float(radial+1)/float(CACHE_RADIAL),2.0));
   float radius=sqrt(mix(inner*inner,outer*outer,randomValue()));
   float angle=(float(texel.x)+randomValue())/float(CACHE_ANGULAR)*2.0*PI;
   float z=((float(axial)+randomValue())/float(CACHE_AXIAL)-0.5)*uLength;
-  vec3 p=vec3(radius*cos(angle),radius*sin(angle),z);
+  origin=vec3(radius*cos(angle),radius*sin(angle),z);
   float above;
-  bool air=baseDistance(p,above)>EPS*4.0;
+  air=baseDistance(origin,above)>EPS*4.0;
   // Each node wavelength is the hero for a quarter of the paths.
-  int hero=min(3,int(randomValue()*4.0));
+  hero=min(3,int(randomValue()*4.0));
   for (int k=0;k<4;k++) wavelength[k]=CACHE_WAVELENGTHS[(hero+k)%4];
   spectralBin=(wavelength-380.0)/10.0;
   prepareWavelength();
@@ -51,8 +54,7 @@ void updateCache() {
   // the estimate unbiased.
   const float SUN_LOBE=0.5;
   int count;
-  vec4 routes=openRoutes(p,uSun,count);
-  vec3 direction;
+  vec4 routes=openRoutes(origin,uSun,count);
   if (count>0 && randomValue()<SUN_LOBE) {
     int pick=min(count-1,int(randomValue()*float(count))),source=0;
     for (int i=0;i<4;i++) {
@@ -63,7 +65,7 @@ void updateCache() {
     }
     direction=phaseSample(routeDirection(source,uSun),2);
   } else direction=around(vec3(0,0,1),2.0*randomValue()-1.0,2.0*PI*randomValue());
-  float density=1.0/(4.0*PI);
+  density=1.0/(4.0*PI);
   if (count>0) {
     float lobe=0.0;
     for (int i=0;i<4;i++) {
@@ -74,8 +76,13 @@ void updateCache() {
     }
     density=mix(density,lobe/float(count),SUN_LOBE);
   }
-  vec4 haze;
-  vec4 radiance=air ? pathRadiance(p,direction,uDropletLimit,true,haze)/blackbody(5772.0)/density : vec4(0.0);
+  return true;
+}
+
+void finishCachePath(vec4 radiance,vec3 direction,float density,int hero,bool air) {
+  ivec2 texel=ivec2(gl_FragCoord.xy);
+  vec4 previous=texelFetch(uCacheFluence,texel,0),previousFlux=texelFetch(uCacheFlux,texel,0);
+  radiance/=blackbody(5772.0)*density;
   vec4 fluence;
   for (int k=0;k<4;k++) fluence[(hero+k)%4]=radiance[k];
   // A numerical failure leaves the cell as it was; it is not evidence of terrain.
@@ -86,8 +93,7 @@ void updateCache() {
   outHaze=vec4(air ? mix(previousFlux.xyz,flux,uCacheBlend) : previousFlux.xyz,mix(previousFlux.w,air ? 1.0 : 0.0,uCacheBlend));
 }
 
-void main() {
-  if (uCachePass) {updateCache();return;}
+vec3 cameraRay() {
   uvec2 pixel=uvec2(gl_FragCoord.xy);
   rngState=(pixel.x+pixel.y*uint(uResolution.x))*9781u+0x68bc21ebu;
   int offset=int(randomValue()*41.0);
@@ -103,38 +109,33 @@ void main() {
   vec2 jitter=uDiagnostic==0 ? vec2(randomValue(),randomValue())-0.5 : vec2(0.0);
   vec2 ndc=(gl_FragCoord.xy+jitter)/uResolution*2.0-1.0;
   vec4 view=uInverseProjection*vec4(ndc,1.0,1.0);
-  vec3 ray=normalize((uCameraMatrix*vec4(normalize(view.xyz/view.w),0.0)).xyz);
-  vec3 color,haze=vec3(0.0);
-  if (uDiagnostic==0) {
-    // Four wavelengths, each with density 1/400 nm, share one estimate.
-    float scale=100.0*683.0/uReferenceIlluminance;
-    vec4 hazeRadiance;
-    vec4 radiance=pathRadiance(uCameraPosition,ray,uDropletLimit,false,hazeRadiance);
-    color=spectralXYZ(radiance)*scale;haze=spectralXYZ(hazeRadiance)*scale;
-    // A numerical failure in one sample must not poison the whole history.
-    if (any(isnan(color)) || any(isinf(color))) {color=vec3(0.0);haze=vec3(0.0);}
-  } else {
-    float distance=traceInterior(uCameraPosition,ray);
-    vec3 opticalDepth=vec3(0.0);
-    float densityIntegral=0.0,liquidIntegral=0.0;
-    vec3 airBeta=vec3(0.0),cloudBeta=vec3(0.0);
-    if(uAtmosphere && uPressure>0.0) {
-      wavelength=vec4(680.0,550.0,440.0,550.0);
-      spectralBin=(wavelength-380.0)/10.0;prepareWavelength();
-      airBeta=(sigmaRayleigh+aerosolExtinction).xyz;cloudBeta=cloudExtinction.xyz;
-    }
-    for (int i=0;i<128;i++) {
-      if (i>=uSteps) break;
-      vec3 p=uCameraPosition+ray*distance*(float(i)+0.5)/float(uSteps);
-      float segment=distance/float(uSteps);
-      opticalDepth+=(airBeta*airDensity(p)+cloudBeta*weatherAt(p).r)*segment;
-      densityIntegral+=airDensity(p)*segment;
-      liquidIntegral+=weatherAt(p).r*segment*1000.0;
-    }
-    color=exp(-opticalDepth);
-    if (uDiagnostic==2) color=mix(vec3(0.02,0.08,0.18),vec3(0.98,0.7,0.19),1.0-exp(-densityIntegral/8.0));
-    if (uDiagnostic==3) color=mix(vec3(0.015,0.025,0.04),vec3(0.48,0.87,0.83),1.0-exp(-liquidIntegral*2.0));
+  return normalize((uCameraMatrix*vec4(normalize(view.xyz/view.w),0.0)).xyz);
+}
+
+vec3 diagnosticColor(vec3 ray) {
+  float distance=traceInterior(uCameraPosition,ray);
+  vec3 opticalDepth=vec3(0.0);
+  float densityIntegral=0.0,liquidIntegral=0.0;
+  vec3 airBeta=vec3(0.0),cloudBeta=vec3(0.0);
+  if(uAtmosphere && uPressure>0.0) {
+    wavelength=vec4(680.0,550.0,440.0,550.0);
+    spectralBin=(wavelength-380.0)/10.0;prepareWavelength();
+    airBeta=(sigmaRayleigh+aerosolExtinction).xyz;cloudBeta=cloudExtinction.xyz;
   }
+  for (int i=0;i<128;i++) {
+    if (i>=uSteps) break;
+    vec3 p=uCameraPosition+ray*distance*(float(i)+0.5)/float(uSteps);
+    float segment=distance/float(uSteps);
+    opticalDepth+=(airBeta*airDensity(p)+cloudBeta*weatherAt(p).r)*segment;
+    densityIntegral+=airDensity(p)*segment;
+    liquidIntegral+=weatherAt(p).r*segment*1000.0;
+  }
+  if (uDiagnostic==2) return mix(vec3(0.02,0.08,0.18),vec3(0.98,0.7,0.19),1.0-exp(-densityIntegral/8.0));
+  if (uDiagnostic==3) return mix(vec3(0.015,0.025,0.04),vec3(0.48,0.87,0.83),1.0-exp(-liquidIntegral*2.0));
+  return exp(-opticalDepth);
+}
+
+void finishCameraSample(vec3 color,vec3 haze) {
   vec2 moments=vec2(color.y-haze.y,haze.y);
   moments*=moments;
   if (uHistory>0 && uDiagnostic==0) {
@@ -146,4 +147,28 @@ void main() {
   }
   outColor=vec4(color,moments.x);
   outHaze=vec4(haze,moments.y);
+}
+
+void main() {
+  vec3 origin=uCameraPosition,direction;
+  float density=1.0;
+  int hero=0;
+  bool air=true;
+  if (uCachePass) {
+    if (!startCachePath(origin,direction,density,hero,air)) return;
+  } else {
+    direction=cameraRay();
+    if (uDiagnostic!=0) {finishCameraSample(diagnosticColor(direction),vec3(0.0));return;}
+  }
+  // The only call of the tracer: a second inlined copy would double compile
+  // time and slow software rasterizers by half.
+  vec4 hazeRadiance=vec4(0.0);
+  vec4 radiance=air ? pathRadiance(origin,direction,uDropletLimit,uCachePass,hazeRadiance) : vec4(0.0);
+  if (uCachePass) {finishCachePath(radiance,direction,density,hero,air);return;}
+  // Four wavelengths, each with density 1/400 nm, share one estimate.
+  float scale=100.0*683.0/uReferenceIlluminance;
+  vec3 color=spectralXYZ(radiance)*scale,haze=spectralXYZ(hazeRadiance)*scale;
+  // A numerical failure in one sample must not poison the whole history.
+  if (any(isnan(color)) || any(isinf(color))) {color=vec3(0.0);haze=vec3(0.0);}
+  finishCameraSample(color,haze);
 }
