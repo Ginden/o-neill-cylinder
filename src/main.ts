@@ -63,6 +63,7 @@ function start() {
       clearTimeout(resetTimer);
       resetTimer = setTimeout(() => renderer.resetWeather(), 180);
     }
+    for (const node of document.querySelectorAll<HTMLElement>('[data-clouds]')) node.hidden = !settings.clouds;
     element('speed-label').textContent = settings.clouds && settings.pressure > 0 ? `${settings.timeScale}×` : 'Weather off';
     element<HTMLButtonElement>('pause').disabled = !settings.clouds || settings.pressure <= 0;
     element<HTMLButtonElement>('pause').innerHTML = icon(settings.paused ? 'play' : 'pause');
