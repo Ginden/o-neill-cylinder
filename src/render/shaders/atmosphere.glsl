@@ -11,11 +11,33 @@ uniform int uDropletLimit;
 uniform bool uCachePass;
 uniform int uCacheIteration;
 uniform float uCacheBlend;
+uniform bool uSurfacePass;
+uniform sampler2D uPreviousSurface;
+uniform int uSurfaceSample;
+uniform int uSurfaceHistory;
+uniform vec3 uSolarBands;
 // Camera pass: total XYZ with the surface part's luminance second moment, and
 // the haze part (first event in the medium) with its own second moment.
 // Cache pass: scattered fluence at the node wavelengths, then flux and air fraction.
+// Surface pass: irradiance of light that has scattered or reflected at least
+// once, per reflectance band (680, 550, 440 nm), relative to sunlight.
 layout(location=0) out vec4 outColor;
 layout(location=1) out vec4 outHaze;
+
+// Seeds the generator for one pixel or atlas texel and draws its four
+// wavelengths. Each covers all hero strata every 41 samples. A stable random
+// offset and coprime permutation preserve the uniform spectral estimator.
+// Three companions, rotated by 100 nm, are each uniform on 380–780 nm too.
+void startSample(uint seed,int index) {
+  rngState=seed;
+  int offset=int(randomValue()*41.0);
+  rngState+=uint(index)*6271u;
+  int stratum=(index%41*17+offset)%41;
+  float hero=(float(stratum)+randomValue())*(400.0/41.0);
+  wavelength=380.0+mod(hero+vec4(0.0,100.0,200.0,300.0),400.0);
+  spectralBin=(wavelength-380.0)/10.0;
+  prepareWavelength();
+}
 
 // One iteration of the scattered-light cache. A path from a uniform point in
 // each cell estimates the scattered radiance arriving there from a sampled
@@ -93,19 +115,38 @@ void finishCachePath(vec4 radiance,vec3 direction,float density,int hero,bool ai
   outHaze=vec4(air ? mix(previousFlux.xyz,flux,uCacheBlend) : previousFlux.xyz,mix(previousFlux.w,air ? 1.0 : 0.0,uCacheBlend));
 }
 
+// Light on the wall and endcaps for the raster preview, excluding direct
+// sunlight (its analytic bake). A path from a uniform point in each atlas
+// texel, in a cosine-distributed direction, estimates the irradiance there.
+// Returns false outside the endcap discs.
+bool startSurfacePath(out vec3 origin,out vec3 direction) {
+  uvec2 texel=uvec2(gl_FragCoord.xy);
+  vec2 size=vec2(textureSize(uPreviousSurface,0));
+  startSample((texel.x+texel.y*uint(size.x))*9781u+0x1b873593u,uSurfaceSample);
+  vec3 p;
+  if (!surfaceAtlasPoint((vec2(texel)+vec2(randomValue(),randomValue()))/size,p)) return false;
+  landObjects=false;pathLandObjects=false;
+  vec3 normal=interiorNormal(p);
+  origin=p+normal*(EPS*4.0);
+  direction=around(normal,sqrt(randomValue()),2.0*PI*randomValue());
+  return true;
+}
+
+void finishSurfacePath(vec4 radiance) {
+  vec4 previous=texelFetch(uPreviousSurface,ivec2(gl_FragCoord.xy),0);
+  // Luminance-weighted irradiance in each reflectance band, relative to
+  // sunlight's. Cosine-distributed directions make irradiance π × radiance;
+  // four uniform wavelengths each have density 1/400 nm. Weighting by
+  // luminance makes the preview's luminance exact for any band reflectances.
+  vec3 bands=vec3(spectralXYZ(radiance*materialSpectrum(vec3(1,0,0))).y,spectralXYZ(radiance*materialSpectrum(vec3(0,1,0))).y,
+    spectralXYZ(radiance*materialSpectrum(vec3(0,0,1))).y)*(100.0*PI)/uSolarBands;
+  if (any(isnan(bands)) || any(isinf(bands))) {outColor=previous;return;}
+  outColor=vec4(previous.rgb+(bands-previous.rgb)/float(uSurfaceHistory+1),1.0);
+}
+
 vec3 cameraRay() {
   uvec2 pixel=uvec2(gl_FragCoord.xy);
-  rngState=(pixel.x+pixel.y*uint(uResolution.x))*9781u+0x68bc21ebu;
-  int offset=int(randomValue()*41.0);
-  rngState+=uint(uSample)*6271u;
-  // Each pixel covers all hero strata every 41 samples. A stable random
-  // offset and coprime permutation preserve the uniform spectral estimator.
-  // Three companions, rotated by 100 nm, are each uniform on 380–780 nm too.
-  int stratum=(uSample%41*17+offset)%41;
-  float hero=(float(stratum)+randomValue())*(400.0/41.0);
-  wavelength=380.0+mod(hero+vec4(0.0,100.0,200.0,300.0),400.0);
-  spectralBin=(wavelength-380.0)/10.0;
-  prepareWavelength();
+  startSample((pixel.x+pixel.y*uint(uResolution.x))*9781u+0x68bc21ebu,uSample);
   vec2 jitter=uDiagnostic==0 ? vec2(randomValue(),randomValue())-0.5 : vec2(0.0);
   vec2 ndc=(gl_FragCoord.xy+jitter)/uResolution*2.0-1.0;
   vec4 view=uInverseProjection*vec4(ndc,1.0,1.0);
@@ -156,6 +197,8 @@ void main() {
   bool air=true;
   if (uCachePass) {
     if (!startCachePath(origin,direction,density,hero,air)) return;
+  } else if (uSurfacePass) {
+    if (!startSurfacePath(origin,direction)) {outColor=vec4(0.0);return;}
   } else {
     direction=cameraRay();
     if (uDiagnostic!=0) {finishCameraSample(diagnosticColor(direction),vec3(0.0));return;}
@@ -163,8 +206,9 @@ void main() {
   // The only call of the tracer: a second inlined copy would double compile
   // time and slow software rasterizers by half.
   vec4 hazeRadiance=vec4(0.0);
-  vec4 radiance=air ? pathRadiance(origin,direction,uDropletLimit,uCachePass,hazeRadiance) : vec4(0.0);
+  vec4 radiance=air ? pathRadiance(origin,direction,uDropletLimit,uCachePass || uSurfacePass,hazeRadiance) : vec4(0.0);
   if (uCachePass) {finishCachePath(radiance,direction,density,hero,air);return;}
+  if (uSurfacePass) {finishSurfacePath(radiance);return;}
   // Four wavelengths, each with density 1/400 nm, share one estimate.
   float scale=100.0*683.0/uReferenceIlluminance;
   vec3 color=spectralXYZ(radiance)*scale,haze=spectralXYZ(hazeRadiance)*scale;

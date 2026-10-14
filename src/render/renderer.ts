@@ -15,7 +15,7 @@ import geometry from './shaders/geometry.glsl?raw';
 import transport from './shaders/transport.glsl?raw';
 import display from './shaders/display.glsl?raw';
 import tonemap from './shaders/tonemap.glsl?raw';
-import { SOLAR_WHITE_BALANCE } from './color';
+import { SOLAR_BANDS,SOLAR_WHITE_BALANCE } from './color';
 import spectrum from './shaders/spectrum.glsl?raw';
 import cache from './shaders/cache.glsl?raw';
 import cacheDiffusion from './shaders/cache-diffusion.glsl?raw';
@@ -36,6 +36,14 @@ const DIFFUSION_SWEEPS=16,DIFFUSION_RELAXATION=1.8;
 // A cache iteration runs in bands, one per traced band, so that no single GPU
 // submission traces paths from every cell.
 const CACHE_BANDS=8;
+// Light that has scattered or reflected at least once, on the wall and endcaps,
+// for the raster preview (atlas layout in geometry.glsl). It varies slowly:
+// about 200 m texels, one draw of 24576 paths per sample. Path tracing spends
+// an eighth of its paths on it until SURFACE_FILL samples, then a thirty-second;
+// navigation frames add a sample each until then. Static scenes stop at
+// SURFACE_SAMPLES; live weather keeps a running average.
+const SURFACE_WIDTH=128,SURFACE_HEIGHT=192,SURFACE_PATHS=SURFACE_WIDTH*SURFACE_HEIGHT;
+const SURFACE_FILL=32,SURFACE_SAMPLES=256,SURFACE_WINDOW=16;
 
 export class HabitatRenderer {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.001, 200);
@@ -94,6 +102,12 @@ export class HabitatRenderer {
   private readonly diffusionScene=new THREE.Scene();
   private weatherField?:WeatherField;
   private diffusionDirty=true;
+  private readonly surfaceTargets=[0,1].map(()=>new THREE.WebGLRenderTarget(SURFACE_WIDTH,SURFACE_HEIGHT,
+    {type:THREE.FloatType,wrapS:THREE.RepeatWrapping,depthBuffer:false,stencilBuffer:false}));
+  private surfaceIndex=0;
+  private surfaceSample=0;
+  private surfaceHistory=0;
+  private surfaceBudget=0;
   private populations?:Populations;
   private settings:Settings;
   mode:'preview'|'path'='preview';
@@ -139,7 +153,9 @@ export class HabitatRenderer {
         uResolution: { value: new THREE.Vector2(1, 1) }, uSteps: { value: 56 },
         uDiagnostic: { value: 0 }, uSample:{value:0},uHistory:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]},
         uDropletLimit:{value:0},uCachePass:{value:false},uCacheIteration:{value:0},uCacheBlend:{value:1},uCloudAsymmetry:{value:0.86},
-        uCacheFluence:{value:this.cacheTargets[0].textures[0]},uCacheFlux:{value:this.cacheTargets[0].textures[1]},uCacheDiffusion:{value:this.diffusionTextures[0]}
+        uCacheFluence:{value:this.cacheTargets[0].textures[0]},uCacheFlux:{value:this.cacheTargets[0].textures[1]},uCacheDiffusion:{value:this.diffusionTextures[0]},
+        uSurfacePass:{value:false},uPreviousSurface:{value:this.surfaceTargets[0].texture},uSurfaceSample:{value:0},uSurfaceHistory:{value:0},
+        uSolarBands:{value:SOLAR_BANDS},uSurfaceLight:{value:this.surfaceTargets[0].texture}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
@@ -194,7 +210,7 @@ export class HabitatRenderer {
     this.guidesDirty=true;
     // Live snapshots of the same run keep the cache as a warm start.
     if (snapshot.revision!==this.weatherRevision) this.resetCache();
-    if (this.material.uniforms.uClouds.value && snapshot.revision!==this.weatherRevision) this.resetAccumulation();
+    if (this.material.uniforms.uClouds.value && snapshot.revision!==this.weatherRevision) {this.resetAccumulation();this.resetSurface();}
     this.weatherRevision=snapshot.revision;
   }
 
@@ -268,7 +284,7 @@ export class HabitatRenderer {
     this.terrainState=terrainState;
     this.settings=s;
     if (physicalState!==this.physicalState) {
-      this.resetAccumulation();this.resetCache();this.physicalState=physicalState;
+      this.resetAccumulation();this.resetCache();this.resetSurface();this.physicalState=physicalState;
       this.diffusionMaterial.uniforms.uRadius.value=s.radius;this.diffusionMaterial.uniforms.uLength.value=s.length;
       this.diffusionDirty=true;
     }
@@ -293,9 +309,19 @@ export class HabitatRenderer {
 
   private resetCache() {
     this.cacheIteration=0;this.cacheBand=0;
+    this.clearTargets(this.cacheTargets);
+  }
+
+  /** The preview shows no scattered light from earlier settings. */
+  private resetSurface() {
+    this.surfaceSample=0;this.surfaceHistory=0;
+    this.clearTargets(this.surfaceTargets);
+  }
+
+  private clearTargets(targets:THREE.WebGLRenderTarget[]) {
     const color=this.renderer.getClearColor(new THREE.Color()),alpha=this.renderer.getClearAlpha();
     this.renderer.setClearColor(0x000000,0);
-    for (const target of this.cacheTargets) {this.renderer.setRenderTarget(target);this.renderer.clear(true,false,false);}
+    for (const target of targets) {this.renderer.setRenderTarget(target);this.renderer.clear(true,false,false);}
     this.renderer.setRenderTarget(null);this.renderer.setClearColor(color,alpha);
   }
 
@@ -330,6 +356,21 @@ export class HabitatRenderer {
     }
     const current=this.cacheTargets[this.cacheIndex];
     u.uCacheFluence.value=current.textures[0];u.uCacheFlux.value=current.textures[1];
+  }
+
+  /** Traces the next sample of the preview's surface light. */
+  private advanceSurface(cacheActive:boolean,bounded:boolean) {
+    if (!bounded && this.surfaceHistory>=SURFACE_SAMPLES) return;
+    const u=this.material.uniforms;
+    const history=bounded ? Math.min(this.surfaceHistory,SURFACE_WINDOW-1) : this.surfaceHistory;
+    u.uSurfacePass.value=true;u.uDropletLimit.value=cacheActive ? CAMERA_DROPLETS : 0;
+    u.uSurfaceSample.value=this.surfaceSample;u.uSurfaceHistory.value=history;
+    u.uPreviousSurface.value=this.surfaceTargets[this.surfaceIndex].texture;
+    this.surfaceIndex=1-this.surfaceIndex;
+    this.renderer.setRenderTarget(this.surfaceTargets[this.surfaceIndex]);this.renderer.render(this.scene,this.screenCamera);
+    this.renderer.setRenderTarget(null);u.uSurfacePass.value=false;
+    this.surfaceHistory=history+1;this.surfaceSample++;
+    u.uSurfaceLight.value=this.surfaceTargets[this.surfaceIndex].texture;
   }
 
   private updateBands(width:number,height:number) {
@@ -377,8 +418,16 @@ export class HabitatRenderer {
     }
     this.preview.prepare(this.renderer);
     this.mode=interacting || performance.now()-this.lastMovement<200 ? 'preview' : 'path';
+    const natural=this.material.uniforms.uDiagnostic.value===0;
+    const cacheActive=this.cacheActive;
+    // Live weather, and a warming cache, change what paths return: their
+    // estimates are bounded running averages; static scenes use the exact mean.
+    const bounded=this.liveWeather || (cacheActive && this.cacheIteration<CACHE_WARMUP);
     if(this.mode==='preview') {
       this.preview.render(this.renderer,this.camera,exposure,this.adaptiveExposure);
+      // Navigation right after a change still fills in the scattered light.
+      // The deep-cloud coefficients are a CPU pass, left to static refinement.
+      if (natural && this.surfaceSample<SURFACE_FILL && !(cacheActive && this.diffusionDirty)) this.advanceSurface(cacheActive,bounded);
       this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
       return true;
     }
@@ -391,18 +440,15 @@ export class HabitatRenderer {
     for (const output of [target,this.guideTarget]) {
       output.scissorTest=true;output.scissor.set(0,bottom,target.width,top-bottom);
     }
-    if(this.guidesDirty && this.material.uniforms.uDiagnostic.value===0) {
+    if(this.guidesDirty && natural) {
       this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
     }
-    const cacheActive=this.cacheActive;
     if (cacheActive && this.diffusionDirty) this.updateDiffusion();
     if (cacheActive) this.advanceCache();
     this.material.uniforms.uDropletLimit.value=cacheActive ? CAMERA_DROPLETS : 0;
     this.material.uniforms.uSample.value=this.samples;
     // Keep the spectral sequence advancing after the temporal weight saturates.
-    // A 1/32 update weight smooths live weather and a warming cache; static
-    // scenes use the exact mean.
-    const bounded=this.liveWeather || (cacheActive && this.cacheIteration<CACHE_WARMUP);
+    // A 1/32 update weight smooths live weather and a warming cache.
     const history=bounded ? Math.min(this.historySamples,31) : this.historySamples;
     this.material.uniforms.uHistory.value=history;
     this.material.uniforms.uPrevious.value=previous.textures[0];
@@ -410,6 +456,8 @@ export class HabitatRenderer {
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.screenCamera);
     this.renderer.setRenderTarget(null);
+    this.surfaceBudget=Math.min(SURFACE_PATHS,this.surfaceBudget+target.width*(top-bottom)/(this.surfaceSample<SURFACE_FILL ? 8 : 32));
+    if (natural && this.surfaceBudget>=SURFACE_PATHS) {this.surfaceBudget-=SURFACE_PATHS;this.advanceSurface(cacheActive,bounded);}
     if (++this.band<this.bands) {
       this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
       return false;
@@ -448,7 +496,7 @@ export class HabitatRenderer {
 
   dispose() {
     this.geometry.dispose(); this.material.dispose();this.displayMaterial.dispose();
-    for (const target of [...this.targets,...this.cacheTargets]) target.dispose();
+    for (const target of [...this.targets,...this.cacheTargets,...this.surfaceTargets]) target.dispose();
     for (const texture of this.diffusionTextures) texture.dispose();
     this.diffusionMaterial.dispose();
     this.weather.dispose();this.cloudBounds.dispose();

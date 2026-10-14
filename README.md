@@ -27,9 +27,9 @@ cache. Software rendering works but is slow.
 fly, Q/E down/up, arrows to look, Shift to go faster. *Ground*, *Overlook*
 and *Axis* jump to preset viewpoints; the circular arrow recenters.
 
-While you move, a fast raster preview is shown. About 200 ms after you stop,
-the path tracer takes over and the image keeps refining as long as the camera
-stays still.
+While you move, a fast raster preview is shown, lit by light the path tracer
+has already computed. About 200 ms after you stop, the path tracer takes over
+and the image keeps refining as long as the camera stays still.
 
 **The panel.**
 
@@ -172,6 +172,22 @@ After a reset (new weather, a changed setting) the cache needs a few hundred
 iterations, 20–40 s on a desktop GPU, to settle; until then clouds look
 blotchy. Moving the camera does not reset it.
 
+### Navigation preview
+
+While the camera moves, a raster view of the wall and endcaps replaces the
+path tracer. It shows light on surfaces only; the glow of the air itself
+(haze, the sky seen through the windows) is missing.
+
+- **Direct sunlight** is baked analytically for every point, without terrain
+  shadows.
+- **All other light** (sky, light reflected by land and endcaps, cloud light,
+  lamps) comes from a surface light atlas of about 200 m texels. The path
+  tracer fills it with paths that start on the surfaces themselves. After a
+  change it takes an eighth of the tracing work until it has filled in, and it
+  also fills while you move; then it refines with a thirty-second. Moving the
+  camera does not reset it. Without this atlas, land that no sunlight reaches
+  would be black in the preview.
+
 ### Display
 
 - **Denoising** is an edge-aware à-trous filter (in the style of SVGF). Light
@@ -249,7 +265,7 @@ illustrations, not habitat predictions.
 | `src/settings.ts` | Parameters and presets |
 | `src/physics.ts`, `src/optics.ts` | Hydrostatics, thermodynamics, window, glass and mirror geometry |
 | `src/weather/` | Moist solver and its worker |
-| `src/render/renderer.ts` | GPU passes: tracing bands, accumulation, cloud cache, display |
+| `src/render/renderer.ts` | GPU passes: tracing bands, accumulation, cloud cache, preview surface light, display |
 | `src/render/cache.ts` | Cloud cache grid and diffusion coefficients |
 | `src/render/shaders/transport.glsl` | The path tracer |
 | `src/render/shaders/cache.glsl`, `cache-diffusion.glsl` | Cache lookup and deep-cloud diffusion solve |

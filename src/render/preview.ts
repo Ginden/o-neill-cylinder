@@ -22,9 +22,11 @@ export function atlasSize(radius:number,length:number,limit:number):[number,numb
   return [limit,Math.max(256,height)];
 }
 
-/** A raster navigation view with cached direct-lighting; no path tracer runs
- * while the camera moves. The static renderer retains the full transport model.
- * It also bakes the shared terrain height and land-cover atlases.
+/** A raster navigation view of the wall and endcaps; no camera paths are traced
+ * while the camera moves. Direct sunlight is baked analytically; the renderer
+ * supplies the light that has scattered or reflected at least once, traced into
+ * the same surface atlas (`uSurfaceLight`). It also bakes the shared terrain
+ * height and land-cover atlases.
  */
 export class NavigationPreview {
   readonly terrain=new THREE.WebGLRenderTarget(1,1,{type:THREE.FloatType,format:THREE.RedFormat,depthBuffer:false});
@@ -33,7 +35,8 @@ export class NavigationPreview {
   // Mip levels of the occupancy channel let rays skip land without trees or houses.
   readonly cover=new THREE.WebGLRenderTarget(1,1,{depthBuffer:false,generateMipmaps:true,
     minFilter:THREE.LinearMipmapLinearFilter,magFilter:THREE.LinearFilter});
-  private readonly light=new THREE.WebGLRenderTarget(512,512,{type:THREE.HalfFloatType,depthBuffer:false});
+  // Direct sunlight in the surface atlas layout (geometry.glsl): wall and endcaps.
+  private readonly light=new THREE.WebGLRenderTarget(512,768,{type:THREE.HalfFloatType,depthBuffer:false});
   private readonly bakeScene=new THREE.Scene();
   private readonly bakeCamera=new THREE.Camera();
   private readonly bakeMesh:THREE.Mesh;
@@ -54,7 +57,7 @@ export class NavigationPreview {
         uAtlasResolution:{value:new THREE.Vector2(1,1)},uBakeCover:{value:false}}});
     this.lightMaterial=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
       vertexShader:fullscreenVertex,fragmentShader:common+landscape+surface+geometry+light,
-      uniforms:{...uniforms,uPreviewAtlasSize:{value:new THREE.Vector2(512,512)}}});
+      uniforms:{...uniforms,uPreviewAtlasSize:{value:new THREE.Vector2(this.light.width,this.light.height)}}});
     this.bakeMesh=new THREE.Mesh(fullscreen,this.terrainMaterial);this.bakeScene.add(this.bakeMesh);
     const cylinder=new THREE.CylinderGeometry(1,1,1,384,192,true);cylinder.rotateX(Math.PI/2);
     const shapes=[cylinder,new THREE.CircleGeometry(1,384),new THREE.CircleGeometry(1,384)];

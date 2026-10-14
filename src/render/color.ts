@@ -1,15 +1,19 @@
 import { Matrix3,Vector3 } from 'three';
-import { blackbody,cieXYZ,SOLAR_TEMPERATURE } from './solar';
+import { blackbody,cieXYZ,SOLAR_IRRADIANCE_SOLID_ANGLE,SOLAR_TEMPERATURE } from './solar';
 
 /** Integrate the renderer's 440/550/680 nm reflectance basis under its Sun.
  * The raster preview must not interpret these spectral anchors as sRGB. */
 const columns = [new Vector3(),new Vector3(),new Vector3()];
+/** Luminance-weighted solar irradiance in each band (680, 550, 440 nm) at unit
+ * solar power, in the tracer's units: traced preview light is relative to it. */
+export const SOLAR_BANDS=new Vector3();
 let normalization=0;
 for(let wavelength=380;wavelength<=780;wavelength++) {
   const xyz=new Vector3(...cieXYZ(wavelength)).multiplyScalar(blackbody(wavelength,SOLAR_TEMPERATURE));
   const t=wavelength<550 ? Math.max(0,(wavelength-440)/110) : Math.min(1,(wavelength-550)/130);
   const basis=wavelength<550 ? [0,t,1-t] : [t,1-t,0];
   columns.forEach((column,i)=>column.addScaledVector(xyz,basis[i]));
+  SOLAR_BANDS.add(new Vector3(...basis).multiplyScalar(xyz.y*SOLAR_IRRADIANCE_SOLID_ANGLE));
   normalization+=xyz.y;
 }
 columns.forEach(column=>column.divideScalar(normalization));

@@ -141,6 +141,33 @@ float exteriorPath(inout vec3 p, inout vec3 d) {
   return 0.0;
 }
 
+// Light on the raster preview is cached in a surface atlas: the wall (ground
+// angle × axial position, as atlasCoordinates) fills the lower two thirds, and
+// the endcaps at z = −L/2 and +L/2, as x–y squares, the left and right halves
+// of the top third.
+const float ATLAS_WALL=2.0/3.0;
+vec2 surfaceAtlasCoordinates(vec3 p,bool endcap) {
+  if (endcap) {
+    vec2 square=clamp(p.xy/(2.0*uRadius)+0.5,0.0,1.0);
+    return vec2((square.x+(p.z>0.0 ? 1.0 : 0.0))*0.5,ATLAS_WALL+square.y*(1.0-ATLAS_WALL));
+  }
+  vec2 uv=atlasCoordinates(p);
+  return vec2(uv.x,uv.y*ATLAS_WALL);
+}
+// The surface point at atlas coordinates `uv`: on the terrain, on a pane or
+// frame, or on an endcap. False outside the endcap discs.
+bool surfaceAtlasPoint(vec2 uv,out vec3 p) {
+  if (uv.y<ATLAS_WALL) {
+    float theta=uv.x*2.0*PI+PI*0.5,z=(uv.y/ATLAS_WALL-0.5)*uLength;
+    float height=windowAt(theta) ? 0.0 : terrainAtGround(vec2(uv.x*2.0*PI*uRadius,z));
+    p=vec3(vec2(cos(theta),sin(theta))*(uRadius-height),z);
+    return true;
+  }
+  vec2 square=vec2(fract(uv.x*2.0),(uv.y-ATLAS_WALL)/(1.0-ATLAS_WALL));
+  p=vec3((square-0.5)*2.0*uRadius,uv.x<0.5 ? -uLength*0.5 : uLength*0.5);
+  return length(p.xy)<uRadius;
+}
+
 vec3 interiorNormal(vec3 p) {
   if (abs(p.z)>=uLength*0.5-0.001) return vec3(0,0,-sign(p.z));
   if (windowAt(atan(p.y,p.x)) && abs(length(p.xy)-uRadius)<0.001) return -normalize(vec3(p.xy,0));

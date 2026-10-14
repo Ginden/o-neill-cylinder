@@ -2,10 +2,8 @@ uniform vec2 uPreviewAtlasSize;
 out vec4 outColor;
 void main() {
   wavelength=vec4(550.0);spectralBin=vec4(17.0);glassIndex=glassIndexAtWavelength();
-  vec2 uv=gl_FragCoord.xy/uPreviewAtlasSize;
-  float theta=uv.x*2.0*PI+PI*0.5;
-  float height=windowAt(theta) ? 0.0 : texture(uTerrain,uv).r;
-  vec3 point=vec3(vec2(cos(theta),sin(theta))*(uRadius-height),(uv.y-0.5)*uLength);
+  vec3 point;
+  if (!surfaceAtlasPoint(gl_FragCoord.xy/uPreviewAtlasSize,point)) {outColor=vec4(0.0);return;}
   vec3 normal=interiorNormal(point);
   vec3 p=point+normal*0.001;
   float light=0.0;

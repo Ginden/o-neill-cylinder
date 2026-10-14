@@ -309,6 +309,10 @@ PathState startPath(vec3 p,vec3 direction) {
   return s;
 }
 
+// Trees and houses are traced on the first two segments of a path. Surface
+// atlas paths leave the bare terrain: the raster preview draws no objects.
+bool pathLandObjects=true;
+
 // Advances a path by at most `limit` events, up to `maxEvents` in total.
 // After `dropletLimit` droplet scatterings (0: never) a path ends in the
 // scattered-light cache. `excludeDirect` omits sunlight reaching the start
@@ -359,7 +363,7 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
       else {s.beta*=transmittance/max(1.0-chance,1e-8);s.inside=true;s.neeReachable=false;}
       s.p=hit+s.direction*(EPS*4.0);continue;
     }
-    landObjects=s.order<2;
+    landObjects=pathLandObjects && s.order<2;
     float distance=s.pending>=0.0 ? s.pending : traceInterior(s.p,s.direction);
     s.pending=-1.0;
     vec3 point;int species;

@@ -28,6 +28,44 @@ test('uses raster navigation during interaction and resumes static accumulation'
   expect(errors).toEqual([]);
 });
 
+test('lights the navigation preview with scattered light where no sunlight falls',async({page})=>{
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts',navigationModule='/src/render/navigation.ts';
+    const {HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule),{Navigation}=await import(navigationModule);
+    const canvas=document.createElement('canvas');canvas.style.width='160px';canvas.style.height='90px';document.body.append(canvas);
+    // Sunlight 5° off the axis reaches only the far endcap: the land in view
+    // receives scattered light alone. A fixed exposure suits its few cd/m².
+    const settings={...defaults,quality:'fast',clouds:false,paused:true,lightMode:'sun',sunElevation:85,adaptiveExposure:false,exposure:1024};
+    const renderer=new HabitatRenderer(canvas,settings);new Navigation(renderer.camera,canvas,settings);renderer.resize(160,90,'fast',1);
+    const gl=canvas.getContext('webgl2')!;
+    // The renderer skips frames while the GPU is busy; fences signal between tasks.
+    const preview=async()=>{while(!renderer.render(true)) await new Promise(resolve=>requestAnimationFrame(resolve));};
+    const litLand=()=>{
+      gl.finish();
+      const data=new Uint8Array(canvas.width*canvas.height*4);gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,data);
+      let lit=0;
+      for(let i=0;i<data.length/2;i+=4) if(Math.max(data[i],data[i+1],data[i+2])>=3) lit++;
+      return lit/(data.length/8);
+    };
+    // The first preview frame has direct sunlight only; each further frame adds a traced sample.
+    await preview();
+    const direct=litLand();
+    for(let frame=0;frame<8;frame++) await preview();
+    const scattered=litLand(),filled=renderer['surfaceHistory'];
+    // Navigation keeps the light, which does not depend on the camera.
+    renderer.camera.rotateY(0.3);await preview();
+    const afterTurn=renderer['surfaceHistory'];
+    const error=gl.getError();renderer.dispose();canvas.remove();
+    return {direct,scattered,filled,afterTurn,error};
+  });
+  await test.info().attach('preview-light',{body:JSON.stringify(result),contentType:'application/json'});
+  expect(result.error).toBe(0);
+  expect(result.direct).toBeLessThan(0.05);
+  expect(result.scattered).toBeGreaterThan(0.5);
+  expect(result.afterTurn).toBe(result.filled+1);
+});
+
 test('denoises the static display without changing camera history or light-meter data',async({page})=>{
   // Run a controlled renderer: no background animation may add samples between comparisons.
   await openIsolatedPage(page);
