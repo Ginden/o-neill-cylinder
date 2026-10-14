@@ -28,7 +28,7 @@ export const sliders: Record<string, SliderSpec[]> = {
     { key: 'lapseRate', label: 'Temperature lapse', min: 0, max: 10, step: 0.1, unit: 'K/km', hint: 'Per kilometre of centrifugal potential height; gravity decreases toward the axis.' }
   ],
   light: [
-    { key: 'solarPower', label: 'Solar irradiance', min: 0, max: 2, step: 0.01, unit: '×' },
+    { key: 'solarPower', label: 'Solar irradiance', min: 0, max: 2, step: 0.01, unit: '×', hint: 'Physical sunlight. Luminance readouts and weather heating follow it, and settlement lamps light below 2%. The adapted view rescales brightness, as eyes do.' },
     { key: 'windowTransmission', label: 'Glass bulk transmission', min: 0, max: 1, step: 0.01, unit: '%', scale: 100, hint: 'Absorption multiplier. Fresnel reflection is calculated separately for both interfaces, with wavelength-dependent BK7 refractive index.' },
     { key: 'mirrorTilt', label: 'Mirror deployment offset', min: -35, max: 35, step: 1, unit: '°', hint: 'Three finite panels are hinged at the −Z end of the windows. Zero deploys them at 45°. Reflected light follows their surface normals.' },
     { key: 'mirrorReflectivity', label: 'Mirror reflectivity', min: 0, max: 1, step: 0.01, unit: '%', scale: 100 },
@@ -47,7 +47,7 @@ export const sliders: Record<string, SliderSpec[]> = {
     { key: 'seed', clouds: true, label: 'Weather seed', min: 1, max: 999, step: 1, unit: '' }
   ],
   display: [
-    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Each stop doubles brightness. Adjust the adapted view’s brightness, or disable adaptation for fixed-exposure comparisons. Physical luminance is unchanged.' }
+    { key: 'exposure', label: 'Exposure compensation', min: 0.0625, max: 4096, step: 0.1, unit: 'stops', logarithmic: true, hint: 'Display only: each stop doubles brightness on screen. Unlike solar irradiance, it changes no physical value. Adjust the adapted view, or disable adaptation for fixed-exposure comparisons.' }
   ]
 };
 

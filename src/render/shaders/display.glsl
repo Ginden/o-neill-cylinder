@@ -3,10 +3,18 @@ uniform int uDiagnostic;
 uniform vec2 uDisplayResolution;
 out vec4 outColor;
 // Catmull-Rom upsampling from the traced resolution, in nine bilinear taps.
-// Sharper than bilinear; negative lobes are clamped.
+// Sharper than bilinear. Its lobes overshoot beside a bright edge: below
+// zero they drew black outlines around sunlit patches and fireflies. The
+// result stays within the four nearest traced pixels.
 vec3 upsample(vec2 uv) {
+  ivec2 last=textureSize(uImage,0)-1;
   vec2 size=vec2(textureSize(uImage,0));
   vec2 position=uv*size-0.5,base=floor(position),f=position-base;
+  vec3 low=vec3(1e30),high=vec3(0.0);
+  for (int i=0;i<4;i++) {
+    vec3 near=texelFetch(uImage,clamp(ivec2(base)+ivec2(i&1,i>>1),ivec2(0),last),0).rgb;
+    low=min(low,near);high=max(high,near);
+  }
   vec2 w0=f*(-0.5+f*(1.0-0.5*f)),w1=1.0+f*f*(-2.5+1.5*f),w2=f*(0.5+f*(2.0-1.5*f)),w3=f*f*(-0.5+0.5*f);
   vec2 w12=w1+w2,offset=w2/w12;
   vec2 t0=(base-0.5)/size,t3=(base+2.5)/size,t12=(base+0.5+offset)/size;
@@ -14,7 +22,7 @@ vec3 upsample(vec2 uv) {
   color+=(texture(uImage,vec2(t0.x,t0.y)).rgb*w0.x+texture(uImage,vec2(t12.x,t0.y)).rgb*w12.x+texture(uImage,vec2(t3.x,t0.y)).rgb*w3.x)*w0.y;
   color+=(texture(uImage,vec2(t0.x,t12.y)).rgb*w0.x+texture(uImage,vec2(t12.x,t12.y)).rgb*w12.x+texture(uImage,vec2(t3.x,t12.y)).rgb*w3.x)*w12.y;
   color+=(texture(uImage,vec2(t0.x,t3.y)).rgb*w0.x+texture(uImage,vec2(t12.x,t3.y)).rgb*w12.x+texture(uImage,vec2(t3.x,t3.y)).rgb*w3.x)*w3.y;
-  return max(color,vec3(0.0));
+  return clamp(color,low,high);
 }
 void main() {
   vec3 color=upsample(gl_FragCoord.xy/uDisplayResolution);

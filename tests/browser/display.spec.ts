@@ -38,3 +38,34 @@ test('tone maps neutral daylight, preserves black, and reduces color only in dim
   expect(chroma(result.dim)).toBeLessThan(0.001);
   expect(chroma(result.fixed)).toBeGreaterThan(0.1);
 });
+
+test('upsamples a sunlit edge without dark or bright fringes',async({page})=>{
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const threeModule='/node_modules/three/build/three.module.js';
+    const THREE=await import(threeModule);
+    const [tonemap,display]=await Promise.all(['tonemap','display'].map(async name=>(await fetch(`/src/render/shaders/${name}.glsl`)).text()));
+    // A traced 8 × 8 image: a patch a thousand times brighter than its shade.
+    const size=8,data=new Float32Array(size*size*4);
+    for(let i=0;i<size*size;i++) data.set(i%size<4 ? [1000,1000,1000,1] : [1,1,1,1],i*4);
+    const image=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.FloatType);
+    image.minFilter=image.magFilter=THREE.LinearFilter;image.needsUpdate=true;
+    const renderer=new THREE.WebGLRenderer(),output=12,target=new THREE.WebGLRenderTarget(output,output,{type:THREE.FloatType,depthBuffer:false});
+    // A diagnostic layer skips tone mapping: the output is the upsampled radiance, sRGB-encoded.
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',fragmentShader:'uniform float uReferenceIlluminance;\n'+tonemap+display,
+      uniforms:{uImage:{value:image},uDiagnostic:{value:1},uDisplayResolution:{value:new THREE.Vector2(output,output)},
+        uExposure:{value:1},uAdaptive:{value:false},uWhiteBalance:{value:new THREE.Matrix3()},uReferenceIlluminance:{value:100000}}});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    renderer.setRenderTarget(target);renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(output*output*4);renderer.readRenderTargetPixels(target,0,0,output,output,pixels);
+    let low=Infinity,high=0;
+    for(let i=0;i<pixels.length;i+=4) {low=Math.min(low,pixels[i]);high=Math.max(high,pixels[i]);}
+    const error=renderer.getContext().getError();plane.dispose();material.dispose();target.dispose();image.dispose();renderer.dispose();
+    return {low,high,error};
+  });
+  const encode=(value:number)=>1.055*value**(1/2.4)-0.055;
+  expect(result.error).toBe(0);
+  expect(result.low).toBeGreaterThanOrEqual(encode(1)-1e-4);
+  expect(result.high).toBeLessThanOrEqual(encode(1000)+1e-3);
+});
