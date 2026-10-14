@@ -195,3 +195,59 @@ test('rough water conserves reflected energy and obeys reciprocity',async({page}
     expect(result.pixels[i+1]).toBeLessThan(5e-4);
   }
 });
+
+test('finds pane reflections of sunlight that obey the law of reflection and focus as the curved glass does',async({page})=>{
+  const files=['common','landscape','surface','geometry','spectrum','cache','transport'];
+  const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async(source)=>{
+    const threeModule='/node_modules/three/build/three.module.js',rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts';
+    const THREE=await import(threeModule),{HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule);
+    // The Sun 37° below the axis: light enters one window and meets the panes across.
+    const settings={...defaults,clouds:false,lightMode:'sun',sunAzimuth:59,sunElevation:-37};
+    const habitat=new HabitatRenderer(document.createElement('canvas'),settings);
+    const count=256,target=new THREE.WebGLRenderTarget(count,2,{type:THREE.FloatType,depthBuffer:false});
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,uniforms:habitat.material.uniforms,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',
+      fragmentShader:source+`
+        out vec4 outColor;
+        void main(){
+          rngState=uint(gl_FragCoord.x)*9781u+0x68bc21ebu;randomValue();
+          wavelength=vec4(550.0);spectralBin=vec4(17.0);prepareWavelength();
+          float r=uRadius*sqrt(randomValue())*0.99,a=2.0*PI*randomValue(),z=(randomValue()-0.5)*uLength*0.9;
+          vec3 p=vec3(r*cos(a),r*sin(a),z);
+          PaneRoute route;
+          float total=paneRoutes(p,uSun,true,route);
+          outColor=gl_FragCoord.y<1.0 ? vec4(p,total) : vec4(route.point,route.ratio);
+        }`});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    habitat.renderer.setRenderTarget(target);habitat.renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(count*2*4);habitat.renderer.readRenderTargetPixels(target,0,0,count,2,pixels);
+    const sun=habitat.material.uniforms.uSun.value.toArray(),radius=settings.radius;
+    let routes=0,wall=0,reflection=0,focus=0;
+    for(let i=0;i<count;i++) {
+      const [px,py,pz,total]=pixels.slice(i*4,i*4+4),[bx,by,bz,ratio]=pixels.slice((count+i)*4,(count+i)*4+4);
+      if(total<=0) continue;
+      routes++;
+      const rb=Math.hypot(bx,by),n=[-bx/rb,-by/rb,0],v=sun.map((c:number)=>-c);
+      wall=Math.max(wall,Math.abs(rb-radius));
+      // Reflected light must travel from the pane point straight to the receiver.
+      const vn=v[0]*n[0]+v[1]*n[1],reflected=[v[0]-2*vn*n[0],v[1]-2*vn*n[1],v[2]];
+      const offset=[px-bx,py-by,pz-bz],length=Math.hypot(...offset);
+      reflection=Math.max(reflection,Math.acos(Math.min(1,(reflected[0]*offset[0]+reflected[1]*offset[1]+reflected[2]*offset[2])/length)));
+      // Focusing of the concave glass across the axis: R·cos θ / |R·cos θ − 2t|.
+      const cosine=Math.abs(v[0]*bx+v[1]*by)/(rb*Math.hypot(v[0],v[1])),inPlane=radius*cosine;
+      focus=Math.max(focus,Math.abs(ratio/(inPlane/Math.abs(inPlane-2*Math.hypot(px-bx,py-by)))-1));
+    }
+    const error=habitat.renderer.getContext().getError();material.dispose();plane.dispose();target.dispose();habitat.dispose();
+    return {routes,wall,reflection,focus,error};
+  },source);
+  await test.info().attach('pane-routes',{body:JSON.stringify(result),contentType:'application/json'});
+  expect(result.error).toBe(0);
+  expect(result.routes).toBeGreaterThan(20);
+  // Kilometres and radians. Software rasterizers' sine and cosine are coarser
+  // than a GPU's; 1 mrad is a fifth of the Sun's radius.
+  expect(result.wall).toBeLessThan(1e-6);
+  expect(result.reflection).toBeLessThan(1e-3);
+  expect(result.focus).toBeLessThan(1e-2);
+});

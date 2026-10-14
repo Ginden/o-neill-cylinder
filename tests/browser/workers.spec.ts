@@ -84,6 +84,9 @@ test('splitting GPU work preserves complete samples and abandons interrupted sam
     const settings = { ...defaults, quality: 'fast', clouds: false, paused: true, adaptiveExposure: false };
     const renderer = new HabitatRenderer(canvas, settings);
     const navigation = new Navigation(renderer.camera, canvas, settings);
+    // Samples are compared across time: camera paths must not read the
+    // surface light atlas, which keeps refining in between.
+    renderer.material.uniforms.uSurfaceCache.value = false;
     renderer.resize(64, 48, 'fast', 1);
     const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const accumulate = async () => { while (renderer.samples < 3) { renderer.render(); await frame(); } };
@@ -130,8 +133,10 @@ test('live cloud updates retain spectral history and pausing converges the froze
     new Navigation(renderer.camera, canvas, settings);
     renderer.resize(32, 32, 'fast', 1);
     // Accumulation is tested with exact camera paths: reporting no cloud mass
-    // keeps the scattered-light cache off, whose evolving state would make
-    // samples differ between the static and live runs. Droplets stay in the field.
+    // keeps the scattered-light cache off, and camera paths do not read the
+    // surface light atlas. Either cache's evolving state would make samples
+    // differ between the static and live runs. Droplets stay in the field.
+    renderer.material.uniforms.uSurfaceCache.value = false;
     const solved = new WeatherSolver(settings).snapshot();
     const snapshot = { ...solved, stats: { ...solved.stats, cloudMass: 0 }, revision: 1 };
     renderer.setWeather(snapshot);

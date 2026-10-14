@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'vitest';
 import { defaults } from '../src/settings';
 import { directIllumination } from '../src/physics';
-import { dot,glassPlate,glassReflectance,intersectMirror,mirrorGeometry,reflect,sunDirection,windowOpening } from '../src/optics';
+import { dot,glassPlate,glassReflectance,intersectMirror,mirrorGeometry,paneRouteSources,reflect,sunDirection,windowOpening } from '../src/optics';
 import { cloudMajorants } from '../src/render/majorant';
 
 describe('explicit solar optics',()=>{
@@ -45,6 +45,18 @@ describe('explicit solar optics',()=>{
     const absorbing=glassPlate(1,0.8);
     expect(absorbing.reflectance+absorbing.transmission).toBeLessThan(1);
     expect(glassPlate(0.1,0.8).transmission).toBeLessThan(absorbing.transmission);
+  });
+});
+
+describe('sunlight reflected by panes',()=>{
+  it('searches routes only where light entering one window can meet another',()=>{
+    // The default mirrors and a Sun on the 90° azimuth send light onto land.
+    expect(paneRouteSources(defaults)).toEqual([false,false,false,false]);
+    expect(paneRouteSources({...defaults,lightMode:'sun',sunElevation:30})).toEqual([false,false,false,false]);
+    // Along the axis no light crosses the habitat at all.
+    expect(paneRouteSources({...defaults,lightMode:'sun',sunAzimuth:59,sunElevation:90})[0]).toBe(false);
+    // Off the symmetric azimuths a direct beam reaches the panes across.
+    expect(paneRouteSources({...defaults,lightMode:'sun',sunAzimuth:59,sunElevation:-37})).toEqual([true,false,false,false]);
   });
 });
 

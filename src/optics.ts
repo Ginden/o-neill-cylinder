@@ -33,6 +33,27 @@ export function mirrorGeometry(s: Settings) {
   });
 }
 
+/** Whether each sunlight route (direct, then the three mirrors) can be
+ * reflected by a pane on the way: a beam entering through one window must meet
+ * another window across the habitat. In the plane across the axis, light
+ * travelling at angle β that enters the wall at angle α leaves it at
+ * 2β + π − α. Routes that cannot need no search for pane reflections. The test
+ * is conservative: its margin covers the solar disk and the sampling, and it
+ * ignores the mirrors' finite size and the habitat's length. */
+export function paneRouteSources(s: Settings): boolean[] {
+  const sun = sunDirection(s);
+  const routes: Vec3[] = [sun, ...(s.lightMode === 'mirrors' ? mirrorGeometry(s).map(panel => reflect(sun, panel.normal)) : [])];
+  const centers = [-Math.PI / 6, Math.PI / 2, 7 * Math.PI / 6], half = s.windowFraction * Math.PI / 3, margin = 0.02;
+  const inWindow = (angle: number) => centers.some(center => Math.abs(Math.atan2(Math.sin(angle - center), Math.cos(angle - center))) < half + margin);
+  return [0, 1, 2, 3].map(source => {
+    const toward = routes[source];
+    if (!toward || Math.hypot(toward[0], toward[1]) < 1e-4) return false;
+    const beta = Math.atan2(-toward[1], -toward[0]);
+    return centers.some(center => Array.from({ length: 65 }, (_, k) => center - half + 2 * half * k / 64)
+      .some(alpha => Math.cos(alpha - beta) < margin && inWindow(2 * beta + Math.PI - alpha)));
+  });
+}
+
 export function intersectMirror(p: readonly number[], d: readonly number[], panel: ReturnType<typeof mirrorGeometry>[number]) {
   const denominator = dot(d,panel.normal);
   if (Math.abs(denominator)<1e-10) return Infinity;

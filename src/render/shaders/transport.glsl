@@ -238,25 +238,118 @@ vec4 openRoutes(vec3 p,vec3 sun,out int count) {
   return weights;
 }
 
-// Next-event estimation samples the finite Sun, then one open route, and tests
-// the entire aperture → mirror → Sun connection. `ru` holds each wavelength's
-// path density relative to the hero's. When `weighted`, the balance heuristic
-// spans light and phase/BSDF sampling at all four wavelengths; phase sampling
-// would also have to survive the null collisions that ratio tracking weights.
-// The forced camera-segment estimate has no phase-sampling partner.
+// Sunlight also arrives reflected by the inside of a pane: it enters through
+// one window and the concave glass across the habitat reflects part of it.
+// Light of a route travels along v; the wall point b at angle φ reflects it to
+// p when, in the plane across the axis, with the beam at angle β and p at
+// radius ρ and angle ψ, θ = φ − β satisfies ρ·sin(2θ − δ) = R·sin θ, where
+// δ = ψ − β and |θ| < 90° (light arriving from inside). There are one or three
+// such points. The pane focuses the beam across the axis at R·cos θ / 2, so it
+// reaches p with irradiance scaled by R·cos θ / |R·cos θ − 2t| (t: in-plane
+// distance from b): the Sun's image subtends that factor times its solid angle.
+struct PaneRoute {vec3 point;float ratio,weight,exterior;int source;};
+// 1 for routes whose light can meet a pane from inside (paneRouteSources in optics.ts).
+uniform vec4 uPaneSources;
+const int PANE_SCAN=16;
+float paneEquation(float theta,float rho,float delta) {return rho*sin(2.0*theta-delta)-uRadius*sin(theta);}
+// Pane routes are chosen in proportion to their expected light relative to a
+// direct route: the hero's reflectance times the focusing factor, capped near
+// the focus.
+float paneWeight(float ratio,float reflectance) {return reflectance*min(ratio,4.0);}
+// Finds the pane reflections of every route that carry the solar direction
+// `sun` to p and returns the sum of their selection weights. With `draw`,
+// `route` receives one of them in proportion to its weight (weighted
+// reservoir sampling).
+float paneRoutes(vec3 p,vec3 sun,bool draw,out PaneRoute route) {
+  float total=0.0;
+  route=PaneRoute(vec3(0.0),0.0,0.0,0.0,0);
+  float rho=length(p.xy),psi=atan(p.y,p.x);
+  for (int source=0;source<4;source++) {
+    if (source>uMirrorCount) break;
+    vec3 toward=routeDirection(source,sun),v=-toward;
+    float across=length(v.xy);
+    if (uPaneSources[source]<0.5 || across<1e-4) continue;
+    float beta=atan(v.y,v.x),delta=psi-beta;
+    float lo=-0.5*PI+1e-4,hLo=paneEquation(lo,rho,delta);
+    for (int k=1;k<=PANE_SCAN;k++) {
+      float hi=-0.5*PI+1e-4+(PI-2e-4)*float(k)/float(PANE_SCAN),hHi=paneEquation(hi,rho,delta);
+      if ((hLo<0.0)!=(hHi<0.0)) {
+        // Narrow the bracket, then Newton steps kept inside it.
+        float a=lo,b=hi,hA=hLo;
+        for (int j=0;j<4;j++) {
+          float m=0.5*(a+b),hM=paneEquation(m,rho,delta);
+          if ((hM<0.0)==(hA<0.0)) {a=m;hA=hM;} else b=m;
+        }
+        float theta=0.5*(a+b);
+        for (int j=0;j<3;j++) {
+          float slope=2.0*rho*cos(2.0*theta-delta)-uRadius*cos(theta);
+          theta=clamp(theta-paneEquation(theta,rho,delta)/(abs(slope)>1e-6 ? slope : 1e-6),a,b);
+        }
+        float phi=theta+beta;
+        vec2 wall=normalize(vec2(cos(phi),sin(phi))),offset=p.xy-wall*uRadius;
+        vec3 reflected=reflect(v,vec3(-wall,0.0));
+        // The reflected ray runs forward to p, through glass, lit along the route.
+        vec3 point=vec3(wall*uRadius,p.z-length(offset)/across*reflected.z);
+        if (dot(reflected.xy,offset)>0.0 && windowOpening(point)) {
+          float exterior=routeWeight(point-vec3(wall,0.0)*(EPS*4.0),toward,sun);
+          if (exterior>0.0) {
+            vec4 reflectance,transmittance;
+            glassPlate(dot(wall,v.xy),reflectance,transmittance);
+            float focus=uRadius*cos(theta),ratio=focus/max(abs(focus-2.0*length(offset)),1e-6);
+            float weight=paneWeight(ratio,reflectance.x);
+            total+=weight;
+            if (draw && randomValue()*total<weight) route=PaneRoute(point,ratio,weight,exterior,source);
+          }
+        }
+      }
+      lo=hi;hLo=hHi;
+    }
+  }
+  return total;
+}
+// The in-plane focusing factor and selection weight of a pane reflection at
+// `point` on a path arriving along `direction` from `from`.
+vec2 paneReflection(vec3 from,vec3 point,vec3 direction) {
+  vec2 wall=normalize(point.xy);
+  float focus=uRadius*abs(dot(normalize(direction.xy),wall));
+  vec4 reflectance,transmittance;
+  glassPlate(dot(wall,direction.xy),reflectance,transmittance);
+  float ratio=focus/max(abs(focus-2.0*length(from.xy-point.xy)),1e-6);
+  return vec2(ratio,paneWeight(ratio,reflectance.x));
+}
+
+// Next-event estimation samples the finite Sun, then one route: directly
+// through a window, by a mirror and a window, or by a window and a pane
+// reflection across the habitat. Direct and mirror routes each have weight 1,
+// pane routes paneWeight. It tests the entire connection. `ru` holds
+// each wavelength's path density relative to the hero's. When `weighted`, the
+// balance heuristic spans light and phase/BSDF sampling at all four
+// wavelengths; phase sampling would also have to survive the null collisions
+// that ratio tracking weights. The forced camera-segment estimate has no
+// phase-sampling partner.
 vec4 directLight(vec3 p,vec3 normal,vec3 outgoing,int species,vec4 albedo,bool weighted,vec4 ru) {
   vec3 sun=solarSample();
   int count;
   vec4 routes=openRoutes(p,sun,count);
-  if (count==0) return vec4(0.0);
-  int pick=min(count-1,int(randomValue()*float(count))),source=0;
-  for (int i=0;i<4;i++) {
-    if (routes[i]>0.0) {
-      if (pick==0) {source=i;break;}
-      pick--;
+  PaneRoute pane;
+  float total=float(count)+paneRoutes(p,sun,true,pane);
+  if (total<=0.0) return vec4(0.0);
+  float target=randomValue()*total;
+  int source=0;
+  bool reflected=target>=float(count);
+  if (reflected) source=pane.source;
+  else {
+    int pick=min(count-1,int(target));
+    for (int i=0;i<4;i++) {
+      if (routes[i]>0.0) {
+        if (pick==0) {source=i;break;}
+        pick--;
+      }
     }
   }
-  vec3 direction=routeDirection(source,sun);
+  vec3 toward=routeDirection(source,sun);
+  float leg=reflected ? length(pane.point-p) : boundaryDistance(p,toward);
+  vec3 direction=reflected ? (pane.point-p)/leg : toward;
   vec4 phase,samplingPdf;
   if (species==-2) {
     vec2 water=waterReflection(normal,outgoing,direction);
@@ -265,20 +358,37 @@ vec4 directLight(vec3 p,vec3 normal,vec3 outgoing,int species,vec4 albedo,bool w
     samplingPdf=vec4(max(0.0,dot(normal,direction))/PI);phase=samplingPdf;
   } else scatteringPhase(dot(outgoing,direction),species,phase,samplingPdf);
   if (maxComponent(phase)<=0.0) return vec4(0.0);
-  // An open route reaches the pane at the analytic hull. Media are tracked to
-  // it first: inside dense cloud nothing gets through, and the far costlier
-  // terrain march is skipped. Unblocked, the march ends at that same hull.
-  vec4 transmission=shadowTransmission(p,direction,boundaryDistance(p,direction));
-  if (maxComponent(transmission)<=0.0) return vec4(0.0);
-  float distance=traceInterior(p,direction);
-  vec3 opening=p+direction*distance;
-  // The hull test passed; this rejects terrain, trees or roofs in the way.
-  if (!windowOpening(opening) || abs(length(opening.xy)-uRadius)>0.001) return vec4(0.0);
-  vec4 reflectance,transmittance;
-  glassPlate(dot(normalize(opening.xy),direction.xy),reflectance,transmittance);
-  float lightPdf=1.0/(float(count)*SUN_SOLID_ANGLE);
+  // An open route reaches the pane at the analytic hull: one leg to a window,
+  // or one to the reflecting pane and one from it back across the habitat to
+  // the window where the light enters. Media are tracked along each leg first:
+  // inside dense cloud nothing gets through, and the far costlier terrain march
+  // is skipped. Unblocked, the march ends at that same hull and rejects
+  // terrain, trees or roofs in the way. The legs share one loop, so the
+  // marchers are compiled once.
+  vec4 transmission=vec4(1.0);
+  vec3 from=p,along=direction,opening=p;
+  int legs=reflected ? 2 : 1;
+  for (int k=0;k<legs;k++) {
+    transmission*=shadowTransmission(from,along,leg);
+    if (maxComponent(transmission)<=0.0) return vec4(0.0);
+    float distance=traceInterior(from,along);
+    opening=from+along*distance;
+    if (!windowOpening(opening) || abs(length(opening.xy)-uRadius)>0.001) return vec4(0.0);
+    if (k+1<legs) {
+      if (abs(distance-leg)>0.001) return vec4(0.0);
+      from=pane.point-vec3(normalize(pane.point.xy),0.0)*(EPS*4.0);along=toward;leg=boundaryDistance(from,toward);
+    }
+  }
+  vec4 reflectance,transmittance,through=routes[source]*vec4(1.0);
+  float lightPdf=1.0/(total*SUN_SOLID_ANGLE);
+  if (reflected) {
+    glassPlate(dot(normalize(pane.point.xy),toward.xy),reflectance,transmittance);
+    through=reflectance*pane.exterior;
+    lightPdf*=pane.weight/pane.ratio;
+  }
+  glassPlate(dot(normalize(opening.xy),toward.xy),reflectance,transmittance);
   float density=average(ru)*lightPdf+(weighted ? average(ru*samplingPdf*transmission) : 0.0);
-  return albedo*phase*transmittance*routes[source]*transmission*solarRadiance()/density;
+  return albedo*phase*transmittance*through*transmission*solarRadiance()/density;
 }
 
 // The state of one path, so that a path can also be advanced in bounded
@@ -289,29 +399,38 @@ struct PathState {
   // path density relative to the hero's. rl: the same for reaching the next
   // vertex by next-event estimation (set at each scattering vertex).
   vec4 beta,ru,rl,radiance,scattered;
-  float lastPdf,pending;
+  // paneRatio > 0: since the last vertex the path has been reflected once by a
+  // pane, a route next-event estimation samples with this focusing factor and
+  // selection weight.
+  float lastPdf,pending,paneRatio,paneWeight;
   bool haze,neeReachable,inside,cloudPath,forced,singleAir,cameraSegment,done;
-  int mirrorBounces,order,droplets,events;
+  // surfaceCache: the path ends at its second diffuse surface in the surface
+  // atlas; surfaces counts diffuse surface vertices.
+  bool surfaceCache;
+  int mirrorBounces,order,droplets,events,surfaces;
 };
 
 PathState startPath(vec3 p,vec3 direction) {
   PathState s;
   s.p=p;s.direction=direction;s.lastVertex=p;
   s.beta=vec4(1.0);s.ru=vec4(1.0);s.rl=vec4(1.0);s.radiance=vec4(0.0);s.scattered=vec4(0.0);
-  s.lastPdf=0.0;s.pending=-1.0;
+  s.lastPdf=0.0;s.pending=-1.0;s.paneRatio=0.0;s.paneWeight=0.0;
   s.haze=false;s.neeReachable=true;s.inside=true;s.cloudPath=false;
   // Every camera ray estimates single scattering by air with one forced
   // collision on its segment; analog air collisions there omit that term
   // (no next-event estimate, no direct solar hit) to avoid counting it twice.
   s.forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0;s.singleAir=false;s.cameraSegment=true;
-  s.done=false;
-  s.mirrorBounces=0;s.order=0;s.droplets=0;s.events=0;
+  s.done=false;s.surfaceCache=false;
+  s.mirrorBounces=0;s.order=0;s.droplets=0;s.events=0;s.surfaces=0;
   return s;
 }
 
 // Trees and houses are traced on the first two segments of a path. Surface
 // atlas paths leave the bare terrain: the raster preview draws no objects.
 bool pathLandObjects=true;
+// Irradiance of light that has scattered or reflected at least once, per
+// reflectance band relative to sunlight, on the wall and endcaps (atmosphere.glsl).
+uniform sampler2D uSurfaceLight;
 
 // Advances a path by at most `limit` events, up to `maxEvents` in total.
 // After `dropletLimit` droplet scatterings (0: never) a path ends in the
@@ -333,16 +452,26 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
       }
       if (closest>1e19) {
         if (dot(s.direction,uSun)>=cos(SOLAR_RADIUS)) {
-          // Next-event estimation chose among the routes open at the last vertex.
-          bool lightSampled=s.lastPdf>0.0 && s.neeReachable && s.mirrorBounces<=1;
-          bool direct=s.order==0 && s.neeReachable && s.mirrorBounces<=1;
+          // Next-event estimation chose among the routes open at the last
+          // vertex: directly, by a mirror, or with a pane reflection on the way.
+          bool sampled=(s.neeReachable || s.paneRatio>0.0) && s.mirrorBounces<=1;
+          bool lightSampled=s.lastPdf>0.0 && sampled;
+          bool direct=s.order==0 && sampled;
           float density=average(s.ru);
           if (lightSampled) {
             int count;
+            PaneRoute pane;
             openRoutes(s.lastVertex,s.direction,count);
-            density+=average(s.rl)/(float(max(count,1))*SUN_SOLID_ANGLE);
+            float total=float(count)+paneRoutes(s.lastVertex,s.direction,false,pane);
+            float route=s.paneRatio>0.0 ? s.paneWeight/s.paneRatio : 1.0;
+            density+=average(s.rl)*route/(max(total,1e-6)*SUN_SOLID_ANGLE);
           }
-          if (!(lightSampled && s.singleAir) && !(excludeDirect && direct)) s.radiance+=s.beta*solarRadiance()/density;
+          // Sunlight reaching a scattering point only by a chain no route covers
+          // (two pane reflections, two mirrors) is omitted. Paths find it so
+          // rarely that its estimate never converges: almost always too dark,
+          // and now and then one pixel 10⁵ times too bright. Before the first
+          // vertex the Sun is seen, so its images in glass and mirrors remain.
+          if (!(lightSampled && s.singleAir) && !(excludeDirect && direct) && (sampled || s.order==0)) s.radiance+=s.beta*solarRadiance()/density;
         }
         s.done=true;return;
       }
@@ -359,9 +488,12 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
       glassPlate(dot(normal,s.direction),reflectance,transmittance);
       // One choice for all wavelengths, with their mean reflectance.
       float chance=average(reflectance);
-      if (randomValue()<chance) {s.direction=reflect(s.direction,normal);s.beta*=reflectance/chance;s.neeReachable=false;}
-      else {s.beta*=transmittance/max(1.0-chance,1e-8);s.inside=true;s.neeReachable=false;}
-      s.p=hit+s.direction*(EPS*4.0);continue;
+      if (randomValue()<chance) {s.direction=reflect(s.direction,normal);s.beta*=reflectance/chance;}
+      else {s.beta*=transmittance/max(1.0-chance,1e-8);s.inside=true;}
+      s.neeReachable=false;s.paneRatio=0.0;
+      // Leave the glass along its normal: at grazing incidence a step along the
+      // new direction stays within EPS of it, and the next trace hits it again.
+      s.p=hit+normal*(s.inside ? -EPS*4.0 : EPS*4.0);continue;
     }
     landObjects=pathLandObjects && s.order<2;
     float distance=s.pending>=0.0 ? s.pending : traceInterior(s.p,s.direction);
@@ -416,7 +548,7 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
         s.beta*=phase/s.lastPdf;s.ru*=pdf/s.lastPdf;
         s.direction=next;
       }
-      s.p=point;s.lastVertex=point;s.neeReachable=true;s.order++;
+      s.p=point;s.lastVertex=point;s.neeReachable=true;s.paneRatio=0.0;s.order++;
     } else {
       if (maxComponent(s.beta)<=0.0) {s.done=true;return;}
       s.cameraSegment=false;
@@ -435,10 +567,15 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
         const float REFLECTION_CHANCE=0.85;
         if (randomValue()<REFLECTION_CHANCE) {
           s.beta*=reflectance/REFLECTION_CHANCE;
-          s.direction=reflect(s.direction,normal);s.p=hit+s.direction*(EPS*4.0);s.neeReachable=false;
+          // The first pane reflection after a vertex is a route that next-event
+          // estimation samples; later ones are not.
+          vec2 pane=paneReflection(s.lastVertex,hit,s.direction);
+          s.paneRatio=s.neeReachable ? pane.x : 0.0;s.paneWeight=pane.y;
+          // Leave the glass along its normal (see the exterior branch).
+          s.direction=reflect(s.direction,normal);s.p=hit+normal*(EPS*4.0);s.neeReachable=false;
         } else {
           s.beta*=transmittance/(1.0-REFLECTION_CHANCE);
-          s.p=hit+s.direction*(EPS*4.0);s.inside=false;s.mirrorBounces=0;
+          s.p=hit-normal*(EPS*4.0);s.inside=false;s.mirrorBounces=0;
         }
       } else {
         vec2 ground=groundCoordinates(hit);
@@ -454,18 +591,28 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
           alive=water.y>0.0;roulette=false;
           s.lastPdf=max(water.y,1e-10);
           s.beta*=water.x/s.lastPdf;s.rl=s.ru/s.lastPdf;
-          s.direction=next;s.neeReachable=true;
+          s.direction=next;s.neeReachable=true;s.paneRatio=0.0;
         } else {
           vec4 albedo=materialSpectrum(materialAlbedo(hit,normal,kind,id));
           vec3 shading=cap ? normal : shadingNormal(hit,normal,kind,id);
           // Emission is a source term; it does not brighten unlit fields or endcaps.
           if (!cap && !windowAt(atan(hit.y,hit.x)) && uSolarPower<0.02) s.radiance+=s.beta*settlementLamp(ground)*lampRadiance()/average(s.ru);
           connectNormal=shading;connectAlbedo=albedo;
-          s.beta*=albedo;
-          s.direction=around(shading,sqrt(randomValue()),2.0*PI*randomValue());
-          // Shading-normal samples beneath the geometric surface are absorbed.
-          alive=dot(s.direction,normal)>0.0;
-          s.lastPdf=max(0.0,dot(shading,s.direction))/PI;s.rl=s.ru/max(s.lastPdf,1e-10);s.neeReachable=true;
+          if (s.surfaceCache && ++s.surfaces>=2) {
+            // At a camera path's second surface, light that has scattered or
+            // reflected at least once comes from the surface atlas. Its bands
+            // are a piecewise-linear spectrum relative to sunlight, exact in
+            // luminance. Next-event estimation supplies sunlight at full weight.
+            vec3 bands=surfaceAtlasLight(uSurfaceLight,surfaceAtlasCoordinates(hit,cap),cap,vec2(0.0));
+            s.radiance+=s.beta*albedo*materialSpectrum(bands)*blackbody(5772.0)*(SUN_SOLID_ANGLE/PI)/average(s.ru);
+            weighted=false;alive=false;
+          } else {
+            s.beta*=albedo;
+            s.direction=around(shading,sqrt(randomValue()),2.0*PI*randomValue());
+            // Shading-normal samples beneath the geometric surface are absorbed.
+            alive=dot(s.direction,normal)>0.0;
+            s.lastPdf=max(0.0,dot(shading,s.direction))/PI;s.rl=s.ru/max(s.lastPdf,1e-10);s.neeReachable=true;s.paneRatio=0.0;
+          }
         }
       }
     }
@@ -477,7 +624,10 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
     if (!alive) {s.done=true;return;}
     // Direct lighting is already estimated above. Terminate weak continuation
     // paths from the first event; surviving paths retain their expected energy.
-    if (s.order>=1 && roulette) {
+    // Camera paths bound for the surface atlas all go on to their second
+    // surface: rouletting a dark first surface left most samples empty and a
+    // few very bright.
+    if (s.order>=1 && roulette && !(s.surfaceCache && s.surfaces==1)) {
       // A compulsory 5% loss per collision makes the hundreds of conservative
       // droplet scatterings in fog exponentially rare, extremely bright paths.
       // Still terminate weak paths, but let unit-throughput cloud paths live.
@@ -492,8 +642,9 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
 // receives the haze part: single scattering of air on the camera segment plus
 // paths whose first event is a medium collision there. The display filter
 // treats it separately from light reflected by visible surfaces.
-vec4 pathRadiance(vec3 p,vec3 direction,int dropletLimit,bool excludeDirect,out vec4 hazeRadiance) {
+vec4 pathRadiance(vec3 p,vec3 direction,int dropletLimit,bool excludeDirect,bool surfaceCache,out vec4 hazeRadiance) {
   PathState s=startPath(p,direction);
+  s.surfaceCache=surfaceCache;
   advancePath(s,1025,1025,dropletLimit,excludeDirect);
   hazeRadiance=s.scattered+(s.haze ? s.radiance : vec4(0.0));
   return s.radiance+s.scattered;

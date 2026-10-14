@@ -154,6 +154,14 @@ vec2 surfaceAtlasCoordinates(vec3 p,bool endcap) {
   vec2 uv=atlasCoordinates(p);
   return vec2(uv.x,uv.y*ATLAS_WALL);
 }
+// Filtered atlas lookup, offset by whole texels, that stays within the texel
+// centres of one region: the wall (which wraps around) or one endcap.
+vec3 surfaceAtlasLight(sampler2D atlas,vec2 uv,bool endcap,vec2 offset) {
+  vec2 size=vec2(textureSize(atlas,0)),margin=0.5/size;
+  vec2 low=endcap ? vec2(uv.x<0.5 ? 0.0 : 0.5,ATLAS_WALL) : vec2(-1e3,0.0);
+  vec2 high=endcap ? low+vec2(0.5,1.0-ATLAS_WALL) : vec2(1e3,ATLAS_WALL);
+  return textureLod(atlas,clamp(uv+offset/size,low+margin,high-margin),0.0).rgb;
+}
 // The surface point at atlas coordinates `uv`: on the terrain, on a pane or
 // frame, or on an endcap. False outside the endcap discs.
 bool surfaceAtlasPoint(vec2 uv,out vec3 p) {

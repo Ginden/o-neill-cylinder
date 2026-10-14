@@ -16,6 +16,8 @@ uniform sampler2D uPreviousSurface;
 uniform int uSurfaceSample;
 uniform int uSurfaceHistory;
 uniform vec3 uSolarBands;
+// Camera paths end at their second surface in the surface atlas.
+uniform bool uSurfaceCache;
 // Camera pass: total XYZ with the surface part's luminance second moment, and
 // the haze part (first event in the medium) with its own second moment.
 // Cache pass: scattered fluence at the node wavelengths, then flux and air fraction.
@@ -206,7 +208,7 @@ void main() {
   // The only call of the tracer: a second inlined copy would double compile
   // time and slow software rasterizers by half.
   vec4 hazeRadiance=vec4(0.0);
-  vec4 radiance=air ? pathRadiance(origin,direction,uDropletLimit,uCachePass || uSurfacePass,hazeRadiance) : vec4(0.0);
+  vec4 radiance=air ? pathRadiance(origin,direction,uDropletLimit,uCachePass || uSurfacePass,uSurfaceCache && !uCachePass && !uSurfacePass,hazeRadiance) : vec4(0.0);
   if (uCachePass) {finishCachePath(radiance,direction,density,hero,air);return;}
   if (uSurfacePass) {finishSurfacePath(radiance);return;}
   // Four wavelengths, each with density 1/400 nm, share one estimate.

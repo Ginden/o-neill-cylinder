@@ -141,9 +141,18 @@ equation, working in physical units throughout.
 - **Direct sunlight** is sampled explicitly at every scattering point through
   the actual windows and mirrors (next-event estimation), combined with the
   path's own chance of hitting the Sun by multiple importance sampling.
+- **Sunlight reflected by a pane** is sampled the same way. Light entering one
+  window and meeting the glass across the habitat is partly reflected back
+  inside, a dim second Sun. For each point the reflection points on the
+  concave pane are solved in the plane across the axis, and the glass's
+  focusing (focal length R·cos θ / 2) sets the reflected Sun's brightness.
+  With the Sun off the axis this light can be a tenth of what reaches the
+  land; before, paths found it only by chance, as rare, very bright pixels.
 - **Single scattering of air** along each camera ray is estimated
   separately, which removes most noise from clear-sky haze.
 - **Russian roulette** ends weak paths without changing the expected result.
+  Camera paths are never stopped at their first surface (see the surface
+  light cache).
 
 ### Clouds: the scattered-light cache
 
@@ -174,21 +183,37 @@ After a reset (new weather, a changed setting) the cache needs a few hundred
 iterations, 20–40 s on a desktop GPU, to settle; until then clouds look
 blotchy. Moving the camera does not reset it.
 
-### Navigation preview
+### Surfaces: the surface light cache
 
-While the camera moves, a raster view of the wall and endcaps replaces the
-path tracer. It shows light on surfaces only; the glow of the air itself
-(haze, the sky seen through the windows) is missing.
+Land that the Sun does not reach directly is lit by sky, endcaps and other
+land. A path tracer finds that light by bouncing: with Russian roulette at a
+dark field or tree (3–15% reflectance) most samples of such land were zero
+and a few were very bright, the colored speckles of dim scenes. Surfaces
+therefore use a cache too:
 
-- **Direct sunlight** is baked analytically for every point, without terrain
-  shadows.
-- **All other light** (sky, light reflected by land and endcaps, cloud light,
-  lamps) comes from a surface light atlas of about 200 m texels. The path
-  tracer fills it with paths that start on the surfaces themselves. After a
-  change it takes an eighth of the tracing work until it has filled in, and it
-  also fills while you move; then it refines with a thirty-second. Moving the
-  camera does not reset it. Without this atlas, land that no sunlight reaches
-  would be black in the preview.
+- The **surface light atlas** covers the wall and both endcaps with texels of
+  about 200 m. It holds the irradiance of light that has scattered or
+  reflected at least once, per reflectance band (680, 550 and 440 nm,
+  luminance-weighted), relative to sunlight. Direct sunlight is never cached.
+- **The path tracer fills it** with paths that start on the surfaces
+  themselves, in cosine-distributed directions; these paths do not read the
+  atlas, so it has no feedback. After a change it takes an eighth of the
+  tracing work until 64 samples, and it also fills while you move; then it
+  refines with a thirty-second. Moving the camera does not reset it.
+- **Camera paths** go on from their first surface without roulette. At their
+  second surface, sunlight is sampled exactly and the rest comes from the
+  atlas. Until the atlas has 64 samples, the image is a running average, so
+  its early state fades out.
+- **The navigation preview** shows it: while the camera moves, a raster view
+  of the wall and endcaps replaces the path tracer, with direct sunlight
+  baked analytically (without terrain shadows) and all other light from the
+  atlas. The glow of the air itself (haze, the sky seen through the windows)
+  is missing from the preview.
+
+This is an approximation: light that has bounced twice or more is resolved
+at about 200 m, and trees and houses do not cast it. It agrees with exact
+path tracing in the mean (see *Accuracy*) and cuts noise per unit of work
+1.4–4.5×, most in dim scenes.
 
 ### Display
 
@@ -243,6 +268,15 @@ profile, the axis is at about 798 hPa.
     its speed (12.7 against 1.6 samples/s at 480 × 360);
   - uniform fog of 30/km, without deep cells: converges slowly and noisily,
     3300–4400 cd/m² after two minutes in two runs, against 3495 ± 217 cd/m².
+- The surface light cache against exact camera paths at 1280 × 720: image
+  means within 0.3% in daylight, Sun at 85° and Sun at −37°, 59°;
+  per-sample noise lower by 1.4–2.5× at 1.5× the cost. Light bounced twice
+  or more differs locally: in the dimmest scene 6% of 20 × 20-pixel blocks
+  differ from exact by more than three standard errors.
+- Pane reflections: next-event estimation agrees with brute-force sampling of
+  the reflected Sun at 16 land points (χ²/n = 1.4, 25 million samples each).
+  The reflection points and focusing match a dense fan of reflected rays to
+  0.1% (browser test for the GPU solver).
 - The droplet phase function is sampled with its own normalized value as the
   density. Differencing the float32 CDF instead multiplied rare paths' weights
   by about 10⁸, which showed up as fireflies.
@@ -256,8 +290,12 @@ aerosols, measured surface reflectance (BRDFs), glass thickness, stars, rain
 or ice.
 
 **Numerical limits:** cloud-free paths stop after 64 events and cloud paths
-after 1024; the cloud cache approximates high-order scattering; weather is a
-coarse Boussinesq model, not a climate model. Treat numbers as
+after 1024; the cloud cache approximates high-order scattering in cloud and
+the surface light cache light bounced twice or more; sunlight that reaches a
+scattering point only after two pane reflections or two mirrors is omitted
+(paths would find it only as rare, extremely bright pixels; the Sun's images
+seen directly in glass and mirrors remain); weather is a coarse Boussinesq
+model, not a climate model. Treat numbers as
 illustrations, not habitat predictions.
 
 ## Code map
@@ -267,7 +305,7 @@ illustrations, not habitat predictions.
 | `src/settings.ts` | Parameters and presets |
 | `src/physics.ts`, `src/optics.ts` | Hydrostatics, thermodynamics, window, glass and mirror geometry |
 | `src/weather/` | Moist solver and its worker |
-| `src/render/renderer.ts` | GPU passes: tracing bands, accumulation, cloud cache, preview surface light, display |
+| `src/render/renderer.ts` | GPU passes: tracing bands, accumulation, cloud cache, surface light cache, display |
 | `src/render/cache.ts` | Cloud cache grid and diffusion coefficients |
 | `src/render/shaders/transport.glsl` | The path tracer |
 | `src/render/shaders/cache.glsl`, `cache-diffusion.glsl` | Cache lookup and deep-cloud diffusion solve |

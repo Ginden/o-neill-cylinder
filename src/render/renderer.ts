@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Settings } from '../settings';
 import { backgroundAt,rayleighPerKm } from '../physics';
-import { mirrorGeometry, sunDirection } from '../optics';
+import { mirrorGeometry, paneRouteSources, sunDirection } from '../optics';
 import { cloudMajorants } from './majorant';
 import { particleOptics, PHASE_TABLE_SIZE, SPECTRAL_BINS } from './mie';
 import type { Populations } from './particles';
@@ -37,15 +37,17 @@ const DIFFUSION_SWEEPS=16,DIFFUSION_RELAXATION=1.8;
 // A cache iteration runs in bands, one per traced band, so that no single GPU
 // submission traces paths from every cell.
 const CACHE_BANDS=8;
-// Light that has scattered or reflected at least once, on the wall and endcaps,
-// for the raster preview (atlas layout in geometry.glsl). It varies slowly:
-// about 200 m texels, 24576 paths per sample, traced in bands of 3072 so that
-// no submission, least of all a navigation frame, waits long. Path tracing
-// spends an eighth of its paths on it until SURFACE_FILL samples, then a
-// thirty-second; navigation frames add a band each until then. Static scenes
-// stop at SURFACE_SAMPLES; live weather keeps a running average.
+// Light that has scattered or reflected at least once, on the wall and endcaps
+// (atlas layout in geometry.glsl): camera paths read it at their second
+// surface, and the raster preview shows it. It varies slowly: about 200 m
+// texels, 24576 paths per sample, traced in bands of 3072 so that no
+// submission, least of all a navigation frame, waits long. Path tracing spends
+// an eighth of its paths on it until SURFACE_FILL samples, then a
+// thirty-second; navigation frames add a band each until then. Until filled,
+// camera history is a bounded running average. Static scenes stop refining at
+// SURFACE_SAMPLES; live weather keeps a running average.
 const SURFACE_WIDTH=128,SURFACE_HEIGHT=192,SURFACE_BANDS=8,SURFACE_BAND_PATHS=SURFACE_WIDTH*SURFACE_HEIGHT/SURFACE_BANDS;
-const SURFACE_FILL=32,SURFACE_SAMPLES=256,SURFACE_WINDOW=16;
+const SURFACE_FILL=64,SURFACE_SAMPLES=4096,SURFACE_WINDOW=16;
 
 export class HabitatRenderer {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.001, 200);
@@ -162,7 +164,7 @@ export class HabitatRenderer {
         uDropletLimit:{value:0},uCachePass:{value:false},uCacheIteration:{value:0},uCacheBlend:{value:1},uCloudAsymmetry:{value:0.86},
         uCacheFluence:{value:this.cacheTargets[0].textures[0]},uCacheFlux:{value:this.cacheTargets[0].textures[1]},uCacheDiffusion:{value:this.diffusionTextures[0]},
         uSurfacePass:{value:false},uPreviousSurface:{value:this.surfaceTargets[0].textures[0]},uSurfaceSample:{value:0},uSurfaceHistory:{value:0},
-        uSolarBands:{value:SOLAR_BANDS},uSurfaceLight:{value:this.surfaceTargets[0].textures[0]}
+        uSolarBands:{value:SOLAR_BANDS},uSurfaceLight:{value:this.surfaceTargets[0].textures[0]},uSurfaceCache:{value:true},uPaneSources:{value:new THREE.Vector4()}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
@@ -274,6 +276,7 @@ export class HabitatRenderer {
     });
     u.uMirrorSize.value.set(panels[0].halfWidth,panels[0].halfLength);
     u.uMirrorCount.value=s.lightMode==='mirrors' ? 3 : 0;
+    u.uPaneSources.value.fromArray(paneRouteSources(s).map(Number));
     const density=Math.max(...[0,s.radius].map(r=>{
       const b=backgroundAt(r,s);return b.pressure/101325*288.15/b.temperature;
     }));
@@ -461,7 +464,8 @@ export class HabitatRenderer {
     this.material.uniforms.uSample.value=this.samples;
     // Keep the spectral sequence advancing after the temporal weight saturates.
     // A 1/32 update weight smooths live weather and a warming cache.
-    const history=bounded ? Math.min(this.historySamples,31) : this.historySamples;
+    const warming=bounded || (this.material.uniforms.uSurfaceCache.value && this.surfaceSample<SURFACE_FILL);
+    const history=warming ? Math.min(this.historySamples,31) : this.historySamples;
     this.material.uniforms.uHistory.value=history;
     this.material.uniforms.uPrevious.value=previous.textures[0];
     this.material.uniforms.uPreviousHaze.value=previous.textures[1];
