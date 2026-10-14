@@ -88,21 +88,22 @@ vec4 extinctionAt(vec3 p) {
 // Phase function values and sampling densities at the four path wavelengths.
 // Particle phase functions depend on wavelength: the hero's tabulated inverse
 // CDF samples directions, and the other densities enter spectral MIS.
+// The sampling density is taken to be the normalized phase function itself.
+// Differencing the float32 CDF instead returns zero in backscatter bins whose
+// increments fall below its precision near 1; a direction recovered there
+// through cos/acos then multiplied a path's weight by about 1e8. Sampling
+// matches the phase function bin by bin; only the distribution within a
+// bin (under 0.4°) differs.
 void scatteringPhase(float cosine,int species,out vec4 phase,out vec4 pdf) {
   if (species==0) {
     phase=vec4(3.0/(16.0*PI)*(1.0+cosine*cosine));pdf=phase;
     return;
   }
-  float theta=acos(clamp(cosine,-1.0,1.0));
-  float u=max(1e-6,sqrt(theta/PI));
+  float u=sqrt(acos(clamp(cosine,-1.0,1.0))/PI);
   float index=u*1023.0;
   int lo=min(1022,int(index));
-  float jacobian=1023.0/(4.0*PI*PI*u*max(sin(theta),1e-8));
-  for (int k=0;k<4;k++) {
-    vec4 a=particleRow(lo,species,spectralBin[k]),b=particleRow(lo+1,species,spectralBin[k]);
-    phase[k]=mix(a.r,b.r,index-float(lo));
-    pdf[k]=(b.g-a.g)*jacobian;
-  }
+  for (int k=0;k<4;k++) phase[k]=mix(particleRow(lo,species,spectralBin[k]).r,particleRow(lo+1,species,spectralBin[k]).r,index-float(lo));
+  pdf=phase;
 }
 vec3 phaseSample(vec3 axis,int species) {
   float cosine;
@@ -264,95 +265,118 @@ vec4 directLight(vec3 p,vec3 normal,vec3 outgoing,int species,vec4 albedo,bool w
     samplingPdf=vec4(max(0.0,dot(normal,direction))/PI);phase=samplingPdf;
   } else scatteringPhase(dot(outgoing,direction),species,phase,samplingPdf);
   if (maxComponent(phase)<=0.0) return vec4(0.0);
+  // An open route reaches the pane at the analytic hull. Media are tracked to
+  // it first: inside dense cloud nothing gets through, and the far costlier
+  // terrain march is skipped. Unblocked, the march ends at that same hull.
+  vec4 transmission=shadowTransmission(p,direction,boundaryDistance(p,direction));
+  if (maxComponent(transmission)<=0.0) return vec4(0.0);
   float distance=traceInterior(p,direction);
   vec3 opening=p+direction*distance;
   // The hull test passed; this rejects terrain, trees or roofs in the way.
   if (!windowOpening(opening) || abs(length(opening.xy)-uRadius)>0.001) return vec4(0.0);
   vec4 reflectance,transmittance;
   glassPlate(dot(normalize(opening.xy),direction.xy),reflectance,transmittance);
-  vec4 transmission=shadowTransmission(p,direction,distance);
   float lightPdf=1.0/(float(count)*SUN_SOLID_ANGLE);
   float density=average(ru)*lightPdf+(weighted ? average(ru*samplingPdf*transmission) : 0.0);
   return albedo*phase*transmittance*routes[source]*transmission*solarRadiance()/density;
 }
 
-// Returns total spectral radiance at the four path wavelengths; `hazeRadiance`
-// receives the haze part: single scattering of air on the camera segment plus
-// paths whose first event is a medium collision there. The display filter
-// treats it separately from light reflected by visible surfaces.
-vec4 pathRadiance(vec3 p,vec3 direction,out vec4 hazeRadiance) {
-  vec4 beta=vec4(1.0),ru=vec4(1.0),rl=vec4(1.0),radiance=vec4(0.0),scattered=vec4(0.0);
-  bool haze=false;
-  float lastPdf=0.0;
-  vec3 lastVertex=p;
-  bool neeReachable=true;
-  bool inside=true;
-  int mirrorBounces=0,order=0;
-  bool cloudPath=false;
+// The state of one path, so that a path can also be advanced in bounded
+// steps across draws (an uncapped reference keeps it in textures).
+struct PathState {
+  vec3 p,direction,lastVertex;
+  // beta: throughput over the hero's sampling density. ru: each wavelength's
+  // path density relative to the hero's. rl: the same for reaching the next
+  // vertex by next-event estimation (set at each scattering vertex).
+  vec4 beta,ru,rl,radiance,scattered;
+  float lastPdf,pending;
+  bool haze,neeReachable,inside,cloudPath,forced,singleAir,cameraSegment,done;
+  int mirrorBounces,order,droplets,events;
+};
+
+PathState startPath(vec3 p,vec3 direction) {
+  PathState s;
+  s.p=p;s.direction=direction;s.lastVertex=p;
+  s.beta=vec4(1.0);s.ru=vec4(1.0);s.rl=vec4(1.0);s.radiance=vec4(0.0);s.scattered=vec4(0.0);
+  s.lastPdf=0.0;s.pending=-1.0;
+  s.haze=false;s.neeReachable=true;s.inside=true;s.cloudPath=false;
   // Every camera ray estimates single scattering by air with one forced
   // collision on its segment; analog air collisions there omit that term
   // (no next-event estimate, no direct solar hit) to avoid counting it twice.
-  bool forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0,singleAir=false,cameraSegment=true;
-  float pending=-1.0;
-  for (int iteration=0;iteration<1025;iteration++) {
-    if (!uClouds && iteration>=65) break;
-    if (!inside) {
-      float closest=shellHit(p,direction);
+  s.forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0;s.singleAir=false;s.cameraSegment=true;
+  s.done=false;
+  s.mirrorBounces=0;s.order=0;s.droplets=0;s.events=0;
+  return s;
+}
+
+// Advances a path by at most `limit` events, up to `maxEvents` in total.
+// After `dropletLimit` droplet scatterings (0: never) a path ends in the
+// scattered-light cache. `excludeDirect` omits sunlight reaching the start
+// unscattered along routes that next-event estimation samples; cache paths
+// need only the scattered field.
+void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool excludeDirect) {
+  for (int iteration=0;iteration<limit;iteration++) {
+    if (s.done) return;
+    if (s.events>=maxEvents || (!uClouds && s.events>=65)) {s.done=true;return;}
+    s.events++;
+    if (!s.inside) {
+      float closest=shellHit(s.p,s.direction);
       int panel=-1;
       for (int i=0;i<3;i++) {
         if (i>=uMirrorCount) break;
-        float t=mirrorHit(p,direction,i);
+        float t=mirrorHit(s.p,s.direction,i);
         if (t<closest) {closest=t;panel=i;}
       }
       if (closest>1e19) {
-        if (dot(direction,uSun)>=cos(SOLAR_RADIUS)) {
+        if (dot(s.direction,uSun)>=cos(SOLAR_RADIUS)) {
           // Next-event estimation chose among the routes open at the last vertex.
-          bool lightSampled=lastPdf>0.0 && neeReachable && mirrorBounces<=1;
-          float density=average(ru);
+          bool lightSampled=s.lastPdf>0.0 && s.neeReachable && s.mirrorBounces<=1;
+          bool direct=s.order==0 && s.neeReachable && s.mirrorBounces<=1;
+          float density=average(s.ru);
           if (lightSampled) {
             int count;
-            openRoutes(lastVertex,direction,count);
-            density+=average(rl)/(float(max(count,1))*SUN_SOLID_ANGLE);
+            openRoutes(s.lastVertex,s.direction,count);
+            density+=average(s.rl)/(float(max(count,1))*SUN_SOLID_ANGLE);
           }
-          if (!(lightSampled && singleAir)) radiance+=beta*solarRadiance()/density;
+          if (!(lightSampled && s.singleAir) && !(excludeDirect && direct)) s.radiance+=s.beta*solarRadiance()/density;
         }
-        break;
+        s.done=true;return;
       }
-      vec3 hit=p+direction*closest;
+      vec3 hit=s.p+s.direction*closest;
       if (panel>=0) {
-        if (dot(direction,uMirrorNormal[panel])<=0.0) break; // Black rear coating.
-        direction=reflect(direction,uMirrorNormal[panel]);
-        beta*=uMirrorReflectivity;mirrorBounces++;
-        p=hit+direction*(EPS*4.0);continue;
+        if (dot(s.direction,uMirrorNormal[panel])<=0.0) {s.done=true;return;} // Black rear coating.
+        s.direction=reflect(s.direction,uMirrorNormal[panel]);
+        s.beta*=uMirrorReflectivity;s.mirrorBounces++;
+        s.p=hit+s.direction*(EPS*4.0);continue;
       }
-      if (!windowOpening(hit)) break; // Black exterior hull.
+      if (!windowOpening(hit)) {s.done=true;return;} // Black exterior hull.
       vec3 normal=normalize(vec3(hit.xy,0));
       vec4 reflectance,transmittance;
-      glassPlate(dot(normal,direction),reflectance,transmittance);
+      glassPlate(dot(normal,s.direction),reflectance,transmittance);
       // One choice for all wavelengths, with their mean reflectance.
       float chance=average(reflectance);
-      if (randomValue()<chance) {direction=reflect(direction,normal);beta*=reflectance/chance;neeReachable=false;}
-      else {beta*=transmittance/max(1.0-chance,1e-8);inside=true;neeReachable=false;}
-      p=hit+direction*(EPS*4.0);continue;
+      if (randomValue()<chance) {s.direction=reflect(s.direction,normal);s.beta*=reflectance/chance;s.neeReachable=false;}
+      else {s.beta*=transmittance/max(1.0-chance,1e-8);s.inside=true;s.neeReachable=false;}
+      s.p=hit+s.direction*(EPS*4.0);continue;
     }
-    landObjects=order<2;
-    float distance=pending>=0.0 ? pending : traceInterior(p,direction);
-    pending=-1.0;
+    landObjects=s.order<2;
+    float distance=s.pending>=0.0 ? s.pending : traceInterior(s.p,s.direction);
+    s.pending=-1.0;
     vec3 point;int species;
     // Each iteration makes at most one next-event connection after choosing its
     // continuation. A single call site keeps one inlined visibility test.
-    bool connect=false,alive=true,roulette=true,weighted=true;
-    vec4 connectWeight=beta,connectAlbedo=vec4(1.0),connectDensity=ru;
-    vec3 connectPoint=p,connectNormal=vec3(0),connectOutgoing=vec3(0);
+    bool connect=false,alive=true,roulette=true,weighted=true,forcedEstimate=false;
+    vec4 connectWeight=s.beta,connectAlbedo=vec4(1.0),connectDensity=s.ru;
+    vec3 connectPoint=s.p,connectNormal=vec3(0),connectOutgoing=vec3(0);
     int connectSpecies=-1;
-    if (forced) {
+    if (s.forced) {
       // The collision is sampled ∝ majorant transmittance on the segment; ratio
       // tracking estimates the real transmittance. The next iteration repeats
       // this segment with the analog collision or surface hit.
-      forced=false;pending=distance;roulette=false;
+      s.forced=false;s.pending=distance;roulette=false;
       float survival=exp(-uAirMajorant*distance);
       float t=-log(max(1e-12,1.0-randomValue()*(1.0-survival)))/uAirMajorant;
-      vec3 q=p+direction*t;
+      vec3 q=s.p+s.direction*t;
       float density=airDensity(q);
       vec4 molecular=sigmaRayleigh*density,aerosol=aerosolScattering*density;
       float scattering=dot(molecular+aerosol,vec4(1.0));
@@ -360,30 +384,39 @@ vec4 pathRadiance(vec3 p,vec3 direction,out vec4 hazeRadiance) {
         // One scatterer for all wavelengths, chosen by its mean share.
         float molecularChance=dot(molecular,vec4(1.0))/scattering;
         bool rayleigh=randomValue()<molecularChance;
-        connect=true;weighted=false;connectPoint=q;connectOutgoing=direction;
+        connect=true;weighted=false;forcedEstimate=true;connectPoint=q;connectOutgoing=s.direction;
         connectSpecies=rayleigh ? 0 : 1;
         vec4 sigma=rayleigh ? molecular/molecularChance : aerosol/(1.0-molecularChance);
-        connectWeight=beta*sigma*(1.0-survival)/(uAirMajorant*exp(-uAirMajorant*t))*shadowTransmission(p,direction,t);
+        connectWeight=s.beta*sigma*(1.0-survival)/(uAirMajorant*exp(-uAirMajorant*t))*shadowTransmission(s.p,s.direction,t);
       }
-    } else if (mediumEvent(p,direction,distance,beta,ru,rl,point,species)) {
-      cloudPath=cloudPath || species==2;
-      normalizePath(beta,ru);
+    } else if (mediumEvent(s.p,s.direction,distance,s.beta,s.ru,s.rl,point,species)) {
+      s.cloudPath=s.cloudPath || species==2;
+      normalizePath(s.beta,s.ru);
       // Only the camera segment itself; segments after a pane reflection are not
       // covered by the forced estimate.
-      singleAir=cameraSegment && species<2;cameraSegment=false;
-      connect=!singleAir;connectWeight=beta;connectDensity=ru;connectPoint=point;connectOutgoing=direction;connectSpecies=species;
-      haze=haze || order==0;
-      vec3 next=phaseSample(direction,species);
-      vec4 phase,pdf;
-      scatteringPhase(dot(direction,next),species,phase,pdf);
-      lastPdf=max(pdf.x,1e-10);
-      rl=ru/lastPdf;
-      beta*=phase/lastPdf;ru*=pdf/lastPdf;
-      direction=next;p=point;lastVertex=point;neeReachable=true;order++;
+      s.singleAir=s.cameraSegment && species<2;s.cameraSegment=false;
+      connect=!s.singleAir;connectWeight=s.beta;connectDensity=s.ru;connectPoint=point;connectOutgoing=s.direction;connectSpecies=species;
+      s.haze=s.haze || s.order==0;
+      if (species==2 && dropletLimit>0 && (++s.droplets>=dropletLimit || cacheDeep(point))) {
+        // Light scattered more often, or inside optically deep cloud, comes from
+        // the cache. Unscattered sunlight is not cached: next-event estimation
+        // supplies it here at full weight.
+        weighted=false;alive=false;
+        s.radiance+=s.beta*cachedRadiance(point,-s.direction,uCloudAsymmetry)/average(s.ru);
+      } else {
+        vec3 next=phaseSample(s.direction,species);
+        vec4 phase,pdf;
+        scatteringPhase(dot(s.direction,next),species,phase,pdf);
+        s.lastPdf=max(pdf.x,1e-10);
+        s.rl=s.ru/s.lastPdf;
+        s.beta*=phase/s.lastPdf;s.ru*=pdf/s.lastPdf;
+        s.direction=next;
+      }
+      s.p=point;s.lastVertex=point;s.neeReachable=true;s.order++;
     } else {
-      if (maxComponent(beta)<=0.0) break;
-      cameraSegment=false;
-      vec3 hit=p+direction*distance;
+      if (maxComponent(s.beta)<=0.0) {s.done=true;return;}
+      s.cameraSegment=false;
+      vec3 hit=s.p+s.direction*distance;
       bool cap=abs(hit.z)>=uLength*0.5-0.001;
       bool pane=!cap && windowAt(atan(hit.y,hit.x)) && abs(length(hit.xy)-uRadius)<0.001;
       vec2 id;
@@ -394,61 +427,70 @@ vec4 pathRadiance(vec3 p,vec3 direction,out vec4 hazeRadiance) {
         // next-event estimation already samples. Reflections are chosen more often
         // than their Fresnel probability; weights keep the estimate unbiased.
         vec4 reflectance,transmittance;
-        glassPlate(dot(normal,direction),reflectance,transmittance);
+        glassPlate(dot(normal,s.direction),reflectance,transmittance);
         const float REFLECTION_CHANCE=0.85;
         if (randomValue()<REFLECTION_CHANCE) {
-          beta*=reflectance/REFLECTION_CHANCE;
-          direction=reflect(direction,normal);p=hit+direction*(EPS*4.0);neeReachable=false;
+          s.beta*=reflectance/REFLECTION_CHANCE;
+          s.direction=reflect(s.direction,normal);s.p=hit+s.direction*(EPS*4.0);s.neeReachable=false;
         } else {
-          beta*=transmittance/(1.0-REFLECTION_CHANCE);
-          p=hit+direction*(EPS*4.0);inside=false;mirrorBounces=0;
+          s.beta*=transmittance/(1.0-REFLECTION_CHANCE);
+          s.p=hit+s.direction*(EPS*4.0);s.inside=false;s.mirrorBounces=0;
         }
       } else {
         vec2 ground=groundCoordinates(hit);
         bool river=!cap && !windowAt(atan(hit.y,hit.x)) && riverEdge(ground)<0.0;
-        normalizePath(beta,ru);
-        connect=true;connectWeight=beta;connectDensity=ru;connectPoint=hit+normal*(EPS*4.0);
-        p=connectPoint;lastVertex=connectPoint;singleAir=false;order++;
+        normalizePath(s.beta,s.ru);
+        connect=true;connectWeight=s.beta;connectDensity=s.ru;connectPoint=hit+normal*(EPS*4.0);
+        s.p=connectPoint;s.lastVertex=connectPoint;s.singleAir=false;s.order++;
         if (river) {
-          vec3 outgoing=-direction;
+          vec3 outgoing=-s.direction;
           connectNormal=normal;connectOutgoing=outgoing;connectSpecies=-2;
           vec3 next=waterSample(normal,outgoing);
           vec2 water=waterReflection(normal,outgoing,next);
           alive=water.y>0.0;roulette=false;
-          lastPdf=max(water.y,1e-10);
-          beta*=water.x/lastPdf;rl=ru/lastPdf;
-          direction=next;neeReachable=true;
+          s.lastPdf=max(water.y,1e-10);
+          s.beta*=water.x/s.lastPdf;s.rl=s.ru/s.lastPdf;
+          s.direction=next;s.neeReachable=true;
         } else {
           vec4 albedo=materialSpectrum(materialAlbedo(hit,normal,kind,id));
           vec3 shading=cap ? normal : shadingNormal(hit,normal,kind,id);
           // Emission is a source term; it does not brighten unlit fields or endcaps.
-          if (!cap && !windowAt(atan(hit.y,hit.x)) && uSolarPower<0.02) radiance+=beta*settlementLamp(ground)*lampRadiance()/average(ru);
+          if (!cap && !windowAt(atan(hit.y,hit.x)) && uSolarPower<0.02) s.radiance+=s.beta*settlementLamp(ground)*lampRadiance()/average(s.ru);
           connectNormal=shading;connectAlbedo=albedo;
-          beta*=albedo;
-          direction=around(shading,sqrt(randomValue()),2.0*PI*randomValue());
+          s.beta*=albedo;
+          s.direction=around(shading,sqrt(randomValue()),2.0*PI*randomValue());
           // Shading-normal samples beneath the geometric surface are absorbed.
-          alive=dot(direction,normal)>0.0;
-          lastPdf=max(0.0,dot(shading,direction))/PI;rl=ru/max(lastPdf,1e-10);neeReachable=true;
+          alive=dot(s.direction,normal)>0.0;
+          s.lastPdf=max(0.0,dot(shading,s.direction))/PI;s.rl=s.ru/max(s.lastPdf,1e-10);s.neeReachable=true;
         }
       }
     }
     if (connect) {
       vec4 light=connectWeight*directLight(connectPoint,connectNormal,connectOutgoing,connectSpecies,connectAlbedo,weighted,connectDensity);
-      if (weighted) radiance+=light;
-      else scattered+=light;
+      if (forcedEstimate) s.scattered+=light;
+      else s.radiance+=light;
     }
-    if (!alive) break;
+    if (!alive) {s.done=true;return;}
     // Direct lighting is already estimated above. Terminate weak continuation
     // paths from the first event; surviving paths retain their expected energy.
-    if (order>=1 && roulette) {
+    if (s.order>=1 && roulette) {
       // A compulsory 5% loss per collision makes the hundreds of conservative
       // droplet scatterings in fog exponentially rare, extremely bright paths.
       // Still terminate weak paths, but let unit-throughput cloud paths live.
-      float survival=min(cloudPath ? 1.0 : 0.95,maxComponent(beta)/average(ru));
-      if (randomValue()>=survival) break;
-      beta/=survival;
+      float survival=min(s.cloudPath ? 1.0 : 0.95,maxComponent(s.beta)/average(s.ru));
+      if (randomValue()>=survival) {s.done=true;return;}
+      s.beta/=survival;
     }
   }
-  hazeRadiance=scattered+(haze ? radiance : vec4(0.0));
-  return radiance+scattered;
+}
+
+// Total spectral radiance at the four path wavelengths; `hazeRadiance`
+// receives the haze part: single scattering of air on the camera segment plus
+// paths whose first event is a medium collision there. The display filter
+// treats it separately from light reflected by visible surfaces.
+vec4 pathRadiance(vec3 p,vec3 direction,int dropletLimit,bool excludeDirect,out vec4 hazeRadiance) {
+  PathState s=startPath(p,direction);
+  advancePath(s,1025,1025,dropletLimit,excludeDirect);
+  hazeRadiance=s.scattered+(s.haze ? s.radiance : vec4(0.0));
+  return s.radiance+s.scattered;
 }

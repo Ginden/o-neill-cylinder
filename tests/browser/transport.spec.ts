@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { rayleighPerKm } from '../../src/physics';
 
 test('GPU ratio tracking and collision survival agree with analytic Beer–Lambert slabs',async({page})=>{
-  const files=['common','landscape','surface','geometry','spectrum','transport'];
+  const files=['common','landscape','surface','geometry','spectrum','cache','transport'];
   const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await page.goto('about:blank');
   const result=await page.evaluate(fragment=>{
@@ -70,7 +70,7 @@ test('GPU ratio tracking and collision survival agree with analytic Beer–Lambe
 });
 
 test('hero-wavelength delta tracking recovers each wavelength’s Beer–Lambert survival',async({page})=>{
-  const files=['common','landscape','surface','geometry','spectrum','transport'];
+  const files=['common','landscape','surface','geometry','spectrum','cache','transport'];
   const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   const wavelengths=[400,500,600,700],distance=40;
   await page.goto('about:blank');
@@ -150,7 +150,7 @@ test('hero-wavelength delta tracking recovers each wavelength’s Beer–Lambert
 });
 
 test('rough water conserves reflected energy and obeys reciprocity',async({page})=>{
-  const files=['common','landscape','surface','geometry','spectrum','transport'];
+  const files=['common','landscape','surface','geometry','spectrum','cache','transport'];
   const source=(await Promise.all(files.map(file=>readFile(`src/render/shaders/${file}.glsl`,'utf8')))).join('\n');
   await openIsolatedPage(page);
   const result=await page.evaluate(async(source)=>{

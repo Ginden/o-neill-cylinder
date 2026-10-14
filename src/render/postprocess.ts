@@ -13,7 +13,7 @@ export class DisplayDenoiser {
   private readonly material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
     vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',fragmentShader:denoise,
     uniforms:{uSurface:{value:null},uHaze:{value:null},uGuideGeometry:{value:null},uGuideAlbedo:{value:null},uGuideMedium:{value:null},
-      uMaterialXYZ:{value:MATERIAL_XYZ},uSize:{value:new THREE.Vector2(1,1)},uStride:{value:1},uSamples:{value:1},uMode:{value:0},uCloudy:{value:false}}});
+      uMaterialXYZ:{value:MATERIAL_XYZ},uSize:{value:new THREE.Vector2(1,1)},uStride:{value:1},uSamples:{value:1},uMode:{value:0}}});
   private readonly scene=new THREE.Scene();
   private readonly camera=new THREE.Camera();
   constructor(geometry:THREE.BufferGeometry) {this.scene.add(new THREE.Mesh(geometry,this.material));}
@@ -23,19 +23,16 @@ export class DisplayDenoiser {
   }
   /** `accumulation` holds total radiance and first-collision haze; `guides` holds
    * normal/depth, reflectance/domain and cloud depth. Returns filtered XYZ radiance. */
-  filter(renderer:THREE.WebGLRenderer,accumulation:{textures:THREE.Texture[]},guides:{textures:THREE.Texture[]},samples:number,cloudy=false) {
+  filter(renderer:THREE.WebGLRenderer,accumulation:{textures:THREE.Texture[]},guides:{textures:THREE.Texture[]},samples:number) {
     const u=this.material.uniforms;
     u.uGuideGeometry.value=guides.textures[0];u.uGuideAlbedo.value=guides.textures[1];u.uSamples.value=samples;
     u.uGuideMedium.value=guides.textures[2];
-    u.uCloudy.value=cloudy;
     const draw=(mode:number,input:{textures:THREE.Texture[]},target:THREE.WebGLRenderTarget,stride=1)=>{
       u.uMode.value=mode;u.uStride.value=stride;u.uSurface.value=input.textures[0];u.uHaze.value=input.textures[1];
       renderer.setRenderTarget(target);renderer.render(this.scene,this.camera);
     };
     draw(0,accumulation,this.targets[0]);
-    // Multiple cloud scattering has much higher variance. Broaden display
-    // filtering while leaving the radiometric history and meter untouched.
-    for (let pass=0;pass<(cloudy ? 7 : 5);pass++) draw(1,this.targets[pass%2],this.targets[(pass+1)%2],2**pass);
+    for (let pass=0;pass<5;pass++) draw(1,this.targets[pass%2],this.targets[(pass+1)%2],2**pass);
     draw(2,this.targets[1],this.output);
     renderer.setRenderTarget(null);return this.output.texture;
   }

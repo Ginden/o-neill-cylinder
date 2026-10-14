@@ -73,12 +73,24 @@ export interface ParticleOptics {
   data: Float32Array;
   maximumExtinction: number;
   greenExtinction: number;
+  /** Mean scattering cosine g at 550 nm, from the tabulated CDF. */
+  greenAsymmetry: number;
+}
+
+/** Mean scattering cosine g of one wavelength row, from the tabulated CDF. */
+export function asymmetry(data:Float32Array,bin:number) {
+  let g=0;
+  for(let j=1;j<PHASE_TABLE_SIZE;j++) {
+    const offset=(j+bin*PHASE_TABLE_SIZE)*4,theta=Math.PI*((j-0.5)/(PHASE_TABLE_SIZE-1))**2;
+    g+=Math.cos(theta)*(data[offset+1]-data[offset-3]);
+  }
+  return g;
 }
 
 export function summarizeOptics(data:Float32Array):ParticleOptics {
   let maximumExtinction=0;
   for(let bin=0;bin<SPECTRAL_BINS;bin++) maximumExtinction=Math.max(maximumExtinction,data[bin*PHASE_TABLE_SIZE*4+2]);
-  return {data,maximumExtinction,greenExtinction:data[17*PHASE_TABLE_SIZE*4+2]};
+  return {data,maximumExtinction,greenExtinction:data[17*PHASE_TABLE_SIZE*4+2],greenAsymmetry:asymmetry(data,17)};
 }
 
 /** Wavelength rows are independent, so workers can calculate disjoint ranges. */

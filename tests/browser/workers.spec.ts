@@ -119,6 +119,8 @@ test('splitting GPU work preserves complete samples and abandons interrupted sam
 });
 
 test('live cloud updates retain spectral history and pausing converges the frozen field', async ({ page }) => {
+  // Over a hundred cloudy samples on a software rasterizer.
+  test.slow();
   await openIsolatedPage(page);
   const errors = captureErrors(page);
   const result = await page.evaluate(async () => {
@@ -130,7 +132,11 @@ test('live cloud updates retain spectral history and pausing converges the froze
     const renderer = new HabitatRenderer(canvas, settings);
     new Navigation(renderer.camera, canvas, settings);
     renderer.resize(32, 32, 'fast', 1);
-    const snapshot = { ...new WeatherSolver(settings).snapshot(), revision: 1 };
+    // Accumulation is tested with exact camera paths: reporting no cloud mass
+    // keeps the scattered-light cache off, whose evolving state would make
+    // samples differ between the static and live runs. Droplets stay in the field.
+    const solved = new WeatherSolver(settings).snapshot();
+    const snapshot = { ...solved, stats: { ...solved.stats, cloudMass: 0 }, revision: 1 };
     renderer.setWeather(snapshot);
     const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const sample = async () => {

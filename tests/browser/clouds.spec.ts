@@ -1,29 +1,31 @@
 import { expect, test } from '@playwright/test';
 import { openIsolatedPage } from './isolated';
 
-// A neutral fog estimate with only one successful, single-wavelength path per
-// 64 pixels. This is the sparse signal produced by optically thick live clouds.
-// Invisible geometry varies behind it, including isolated crowns and panes.
-test('reconstructs sparse cloud light without spectral grain or hidden surface edges', async ({ page }) => {
+// Noisy fog in front of varied, invisible geometry: crowns, panes and terrain
+// at different depths and normals behind an opaque medium.
+test('filters noisy fog without inheriting hidden surface edges', async ({ page }) => {
   await openIsolatedPage(page);
   const result = await page.evaluate(async () => {
     const threeModule = '/node_modules/three/build/three.module.js', filterModule = '/src/render/postprocess.ts';
     const THREE = await import(threeModule), { DisplayDenoiser } = await import(filterModule);
-    const size = 96, samples = 32, length = size * size * 4;
+    const size = 96, samples = 32, length = size * size * 4, fog = [0.031, 0.03, 0.033];
     const total = new Float32Array(length), haze = new Float32Array(length), geometry = new Float32Array(length);
     const albedo = new Float32Array(length), medium = new Float32Array(length);
-    // Representative spectral XYZ contributions, normalized to mean Y = 0.03.
-    const spectra = [[0.06, 0.03, 0], [0.012, 0.054, 0.002], [0.018, 0.006, 0.088]];
+    // Deterministic noise: luminance ±40 %, color ±10 %, like a few four-wavelength samples.
+    let seed = 12345;
+    const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    let inputSpread = 0;
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       const i = (x + y * size) * 4;
-      geometry.set([0, 0, 1, x % 3 === 0 ? 8 : y % 2 === 0 ? 2 : 15], i);
+      geometry.set([x % 3 === 0 ? 1 : 0, 0, x % 3 === 0 ? 0 : 1, x % 3 === 0 ? 8 : y % 2 === 0 ? 2 : 15], i);
       albedo.set([0.1, 0.4, 0.04, x % 3 === 0 ? 3 : 4], i);
       medium.set([0.08, 0, 0, 1], i);
-      if (x % 8 === 4 && y % 8 === 4) {
-        const color = spectra[(Math.floor(x / 8) + Math.floor(y / 8)) % 3].map(value => value * 64);
-        total.set([...color, 0], i);
-        haze.set([...color, color[1] ** 2 * samples], i);
-      }
+      const scale = 1 + 0.8 * (random() - 0.5), color = fog.map(value => value * scale * (1 + 0.2 * (random() - 0.5)));
+      inputSpread += (scale - 1) ** 2;
+      // Second moment of the samples: their spread around the mean.
+      const moment = color[1] ** 2 + (0.4 * fog[1]) ** 2 * samples / 3;
+      total.set([...color, 0], i);
+      haze.set([...color, moment], i);
     }
     const textures = [total, haze, geometry, albedo, medium].map(data => {
       const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
@@ -39,37 +41,34 @@ test('reconstructs sparse cloud light without spectral grain or hidden surface e
     });
     const scene = new THREE.Scene(); scene.add(new THREE.Mesh(plane, material));
     const read = () => {
-      material.uniforms.image.value = filter.filter(renderer, { textures: textures.slice(0, 2) }, { textures: textures.slice(2) }, samples, true);
+      material.uniforms.image.value = filter.filter(renderer, { textures: textures.slice(0, 2) }, { textures: textures.slice(2) }, samples);
       renderer.setRenderTarget(target); renderer.render(scene, new THREE.Camera());
       const data = new Float32Array(length); renderer.readRenderTargetPixels(target, 0, 0, size, size, data); return data;
     };
     const actual = read();
     // Moving completely obscured geometry cannot change the fog reconstruction.
     for (let i = 3; i < geometry.length; i += 4) geometry[i] = 4;
+    for (let i = 0; i < geometry.length; i += 4) geometry.set([0, 0, 1], i);
     textures[2].needsUpdate = true;
     const flat = read();
-    let maximumGeometryDifference = 0, maximumColorError = 0, minimumLuminance = Infinity, maximumLuminance = 0, sum = 0, count = 0;
-    for (let y = 24; y < size - 24; y++) for (let x = 24; x < size - 24; x++) {
-      const i = (x + y * size) * 4, luminance = actual[i + 1];
-      minimumLuminance = Math.min(minimumLuminance, luminance); maximumLuminance = Math.max(maximumLuminance, luminance);
-      sum += luminance; count++;
+    let maximumGeometryDifference = 0, maximumColorError = 0, spread = 0, count = 0;
+    for (let y = 16; y < size - 16; y++) for (let x = 16; x < size - 16; x++) {
+      const i = (x + y * size) * 4;
+      spread += (actual[i + 1] / fog[1] - 1) ** 2; count++;
       for (const c of [0, 1, 2]) {
         maximumGeometryDifference = Math.max(maximumGeometryDifference, Math.abs(actual[i + c] - flat[i + c]));
-        maximumColorError = Math.max(maximumColorError, Math.abs(actual[i + c] / luminance - 1));
+        maximumColorError = Math.max(maximumColorError, Math.abs(actual[i + c] / actual[i + 1] - fog[c] / fog[1]) / (fog[c] / fog[1]));
       }
     }
     const error = renderer.getContext().getError();
     filter.dispose(); target.dispose(); material.dispose(); plane.dispose(); textures.forEach(texture => texture.dispose()); renderer.dispose();
-    return { maximumGeometryDifference, maximumColorError, minimumLuminance, maximumLuminance, mean: sum / count, error };
+    return { maximumGeometryDifference, maximumColorError, inputSpread: Math.sqrt(inputSpread / (size * size)), outputSpread: Math.sqrt(spread / count), error };
   });
-  await test.info().attach('sparse-cloud-metrics', { body: JSON.stringify(result), contentType: 'application/json' });
+  await test.info().attach('fog-filter-metrics', { body: JSON.stringify(result), contentType: 'application/json' });
   expect(result.error).toBe(0);
   expect(result.maximumGeometryDifference).toBeLessThan(1e-6);
-  expect(result.mean).toBeGreaterThan(0.02);
-  expect(result.mean).toBeLessThan(0.04);
-  expect(result.minimumLuminance).toBeGreaterThan(result.mean * 0.8);
-  expect(result.maximumLuminance).toBeLessThan(result.mean * 1.2);
-  expect(result.maximumColorError).toBeLessThan(0.12);
+  expect(result.outputSpread).toBeLessThan(result.inputSpread * 0.4);
+  expect(result.maximumColorError).toBeLessThan(0.08);
 });
 
 test('cloud filtering depth follows Beer–Lambert visibility instead of obscured geometry', async ({ page }) => {

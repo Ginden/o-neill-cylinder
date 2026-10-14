@@ -17,9 +17,25 @@ import display from './shaders/display.glsl?raw';
 import tonemap from './shaders/tonemap.glsl?raw';
 import { SOLAR_WHITE_BALANCE } from './color';
 import spectrum from './shaders/spectrum.glsl?raw';
+import cache from './shaders/cache.glsl?raw';
+import cacheDiffusion from './shaders/cache-diffusion.glsl?raw';
 import guides from './shaders/guides.glsl?raw';
 import { atlasSize,NavigationPreview } from './preview';
 import { DisplayDenoiser,ExposureMeter } from './postprocess';
+import { CACHE_ANGULAR,CACHE_AXIAL,CACHE_RADIAL,diffusionCells } from './cache';
+import type { WeatherField } from './cache';
+
+// Droplet scatterings traced exactly before a path ends in the cache. Cache
+// paths go further so that each iteration carries light across more cells.
+const CAMERA_DROPLETS=2,CACHE_DROPLETS=64;
+// Iterations before the cache is treated as converged; until then camera
+// history is a bounded running average, as for live weather.
+const CACHE_WARMUP=192;
+// Red-black SOR sweeps of the deep-cloud diffusion solve per cache iteration.
+const DIFFUSION_SWEEPS=16,DIFFUSION_RELAXATION=1.8;
+// A cache iteration runs in bands, one per traced band, so that no single GPU
+// submission traces paths from every cell.
+const CACHE_BANDS=8;
 
 export class HabitatRenderer {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.001, 200);
@@ -64,6 +80,22 @@ export class HabitatRenderer {
   private liveWeather=false;
   private cloudMass=0;
   private historySamples=0;
+  private readonly cacheTargets=[0,1].map(()=>new THREE.WebGLRenderTarget(CACHE_ANGULAR,CACHE_RADIAL*CACHE_AXIAL,
+    {count:2,type:THREE.FloatType,depthBuffer:false,stencilBuffer:false,minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter}));
+  private cacheIndex=0;
+  private cacheIteration=0;
+  private cacheBand=0;
+  // Diffusion coefficient (signed: positive in deep cells) and absorption per cache cell.
+  private readonly diffusionTextures=[0,1].map(()=>{
+    const texture=new THREE.DataTexture(new Float32Array(CACHE_ANGULAR*CACHE_RADIAL*CACHE_AXIAL*4).fill(-1),CACHE_ANGULAR,CACHE_RADIAL*CACHE_AXIAL,THREE.RGBAFormat,THREE.FloatType);
+    texture.needsUpdate=true;return texture;
+  });
+  private readonly diffusionMaterial:THREE.ShaderMaterial;
+  private readonly diffusionScene=new THREE.Scene();
+  private weatherField?:WeatherField;
+  private diffusionDirty=true;
+  private populations?:Populations;
+  private settings:Settings;
   mode:'preview'|'path'='preview';
   samples=0;
   raySize='';
@@ -82,7 +114,7 @@ export class HabitatRenderer {
       glslVersion: THREE.GLSL3,
       depthTest: false, depthWrite: false,
       vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: common + landscape + surface + geometry + spectrum + transport + atmosphere,
+      fragmentShader: common + landscape + surface + geometry + spectrum + cache + transport + atmosphere,
       uniforms: {
         uRadius: { value: settings.radius }, uLength: { value: settings.length },
         uGravity: { value: settings.gravity }, uPressure: { value: settings.pressure },
@@ -105,7 +137,9 @@ export class HabitatRenderer {
         uWeather: { value: this.weather }, uInverseProjection: { value: this.camera.projectionMatrixInverse },
         uCameraMatrix: { value: this.camera.matrixWorld }, uCameraPosition: { value: this.camera.position },
         uResolution: { value: new THREE.Vector2(1, 1) }, uSteps: { value: 56 },
-        uDiagnostic: { value: 0 }, uSample:{value:0},uHistory:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]}
+        uDiagnostic: { value: 0 }, uSample:{value:0},uHistory:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]},
+        uDropletLimit:{value:0},uCachePass:{value:false},uCacheIteration:{value:0},uCacheBlend:{value:1},uCloudAsymmetry:{value:0.86},
+        uCacheFluence:{value:this.cacheTargets[0].textures[0]},uCacheFlux:{value:this.cacheTargets[0].textures[1]},uCacheDiffusion:{value:this.diffusionTextures[0]}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
@@ -125,6 +159,12 @@ export class HabitatRenderer {
       vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
       fragmentShader:common+landscape+surface+geometry+guides,uniforms:this.material.uniforms});
     this.guideScene.add(new THREE.Mesh(this.geometry,this.guideMaterial));
+    this.diffusionMaterial=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',fragmentShader:cacheDiffusion,
+      uniforms:{uFluence:{value:null},uFlux:{value:null},uDiffusion:{value:this.diffusionTextures[0]},uAbsorption:{value:this.diffusionTextures[1]},
+        uRadius:{value:settings.radius},uLength:{value:settings.length},uColor:{value:0},uRelaxation:{value:DIFFUSION_RELAXATION}}});
+    this.diffusionScene.add(new THREE.Mesh(this.geometry,this.diffusionMaterial));
+    this.settings=settings;
     this.apply(settings,populations);
   }
 
@@ -149,7 +189,11 @@ export class HabitatRenderer {
       this.weather.needsUpdate = true;
     }
     this.updateCloudBounds();
+    this.weatherField={data:snapshot.data,dimensions:snapshot.dimensions};
+    this.diffusionDirty=true;
     this.guidesDirty=true;
+    // Live snapshots of the same run keep the cache as a warm start.
+    if (snapshot.revision!==this.weatherRevision) this.resetCache();
     if (this.material.uniforms.uClouds.value && snapshot.revision!==this.weatherRevision) this.resetAccumulation();
     this.weatherRevision=snapshot.revision;
   }
@@ -184,6 +228,8 @@ export class HabitatRenderer {
       this.aerosolExtinction=populations[0].maximumExtinction/populations[0].greenExtinction;
       this.aerosolBlueRatio=populations[0].data[6*PHASE_TABLE_SIZE*4+2]/populations[0].greenExtinction;
       this.cloudExtinction=populations[1].maximumExtinction;
+      u.uCloudAsymmetry.value=populations[1].greenAsymmetry;
+      this.populations=populations;
       this.updateCloudBounds();this.particleState=particleState;
     }
     const scalar = {
@@ -220,10 +266,71 @@ export class HabitatRenderer {
     const physicalState=JSON.stringify([scalar,particleState,s.sunAzimuth,s.sunElevation,s.mirrorTilt,s.lightMode,s.quality,s.diagnostic]);
     this.preview.invalidate(terrainState!==this.terrainState,physicalState!==this.physicalState);
     this.terrainState=terrainState;
-    if (physicalState!==this.physicalState) {this.resetAccumulation();this.physicalState=physicalState;}
+    this.settings=s;
+    if (physicalState!==this.physicalState) {
+      this.resetAccumulation();this.resetCache();this.physicalState=physicalState;
+      this.diffusionMaterial.uniforms.uRadius.value=s.radius;this.diffusionMaterial.uniforms.uLength.value=s.length;
+      this.diffusionDirty=true;
+    }
+  }
+
+  /** Recomputed only when the cache is in use: the CPU pass covers every cell. */
+  private updateDiffusion() {
+    if (!this.populations) return;
+    this.diffusionDirty=false;
+    const {diffusion,absorption}=diffusionCells(this.weatherField,this.settings,this.populations);
+    this.diffusionTextures[0].image.data=diffusion;this.diffusionTextures[1].image.data=absorption;
+    for (const texture of this.diffusionTextures) texture.needsUpdate=true;
   }
 
   private resetAccumulation() {this.samples=0;this.historySamples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
+
+  /** The cache holds only scattered light from clouds; it does not depend on the camera. */
+  private get cacheActive() {
+    const u=this.material.uniforms;
+    return u.uClouds.value && u.uAtmosphere.value && u.uPressure.value>0 && this.cloudMass>0 && u.uDiagnostic.value===0;
+  }
+
+  private resetCache() {
+    this.cacheIteration=0;this.cacheBand=0;
+    const color=this.renderer.getClearColor(new THREE.Color()),alpha=this.renderer.getClearAlpha();
+    this.renderer.setClearColor(0x000000,0);
+    for (const target of this.cacheTargets) {this.renderer.setRenderTarget(target);this.renderer.clear(true,false,false);}
+    this.renderer.setRenderTarget(null);this.renderer.setClearColor(color,alpha);
+  }
+
+  /** Traces one band of the current cache iteration; the camera keeps reading
+   * the previous complete cache until every band is done. */
+  private advanceCache() {
+    const u=this.material.uniforms;
+    const source=this.cacheTargets[this.cacheIndex],target=this.cacheTargets[1-this.cacheIndex];
+    const rows=CACHE_RADIAL*CACHE_AXIAL;
+    const bottom=Math.floor(this.cacheBand*rows/CACHE_BANDS),top=Math.floor((this.cacheBand+1)*rows/CACHE_BANDS);
+    u.uCachePass.value=true;u.uDropletLimit.value=CACHE_DROPLETS;
+    u.uCacheIteration.value=this.cacheIteration;
+    // The first iterations replace the cache, filling it quickly; damping
+    // slows the fixed-point iteration as much as it averages noise. Then a
+    // running average smooths noise, more strongly once warm, following live weather.
+    u.uCacheBlend.value=this.cacheIteration<32 ? 1 : this.cacheIteration<CACHE_WARMUP ? 1/4 : 1/32;
+    u.uCacheFluence.value=source.textures[0];u.uCacheFlux.value=source.textures[1];
+    target.scissorTest=true;target.scissor.set(0,bottom,CACHE_ANGULAR,top-bottom);
+    this.renderer.setRenderTarget(target);this.renderer.render(this.scene,this.screenCamera);
+    target.scissorTest=false;
+    u.uCachePass.value=false;
+    if (++this.cacheBand<CACHE_BANDS) return;
+    this.cacheBand=0;
+    this.cacheIndex=1-this.cacheIndex;this.cacheIteration++;
+    // Deep cloud follows the diffusion solve, with transport cells as its boundary.
+    const d=this.diffusionMaterial.uniforms;
+    for (let pass=0;pass<DIFFUSION_SWEEPS*2;pass++) {
+      const from=this.cacheTargets[this.cacheIndex],to=this.cacheTargets[1-this.cacheIndex];
+      d.uFluence.value=from.textures[0];d.uFlux.value=from.textures[1];d.uColor.value=pass%2;
+      this.renderer.setRenderTarget(to);this.renderer.render(this.diffusionScene,this.screenCamera);
+      this.cacheIndex=1-this.cacheIndex;
+    }
+    const current=this.cacheTargets[this.cacheIndex];
+    u.uCacheFluence.value=current.textures[0];u.uCacheFlux.value=current.textures[1];
+  }
 
   private updateBands(width:number,height:number) {
     // Cloud walks can take hundreds of events. Smaller submissions preserve
@@ -287,10 +394,16 @@ export class HabitatRenderer {
     if(this.guidesDirty && this.material.uniforms.uDiagnostic.value===0) {
       this.renderer.setRenderTarget(this.guideTarget);this.renderer.render(this.guideScene,this.screenCamera);
     }
+    const cacheActive=this.cacheActive;
+    if (cacheActive && this.diffusionDirty) this.updateDiffusion();
+    if (cacheActive) this.advanceCache();
+    this.material.uniforms.uDropletLimit.value=cacheActive ? CAMERA_DROPLETS : 0;
     this.material.uniforms.uSample.value=this.samples;
     // Keep the spectral sequence advancing after the temporal weight saturates.
-    // A 1/32 update weight smooths live weather; static scenes use the exact mean.
-    const history=this.liveWeather ? Math.min(this.historySamples,31) : this.historySamples;
+    // A 1/32 update weight smooths live weather and a warming cache; static
+    // scenes use the exact mean.
+    const bounded=this.liveWeather || (cacheActive && this.cacheIteration<CACHE_WARMUP);
+    const history=bounded ? Math.min(this.historySamples,31) : this.historySamples;
     this.material.uniforms.uHistory.value=history;
     this.material.uniforms.uPrevious.value=previous.textures[0];
     this.material.uniforms.uPreviousHaze.value=previous.textures[1];
@@ -303,7 +416,7 @@ export class HabitatRenderer {
     }
     this.band=0;this.targetIndex=1-this.targetIndex;this.guidesDirty=false;
     this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
-      ? this.denoiser.filter(this.renderer,target,this.guideTarget,history+1,this.material.uniforms.uClouds.value && this.cloudMass>0) : target.textures[0];
+      ? this.denoiser.filter(this.renderer,target,this.guideTarget,history+1) : target.textures[0];
     if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
       this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);
@@ -335,7 +448,9 @@ export class HabitatRenderer {
 
   dispose() {
     this.geometry.dispose(); this.material.dispose();this.displayMaterial.dispose();
-    for (const target of this.targets) target.dispose();
+    for (const target of [...this.targets,...this.cacheTargets]) target.dispose();
+    for (const texture of this.diffusionTextures) texture.dispose();
+    this.diffusionMaterial.dispose();
     this.weather.dispose();this.cloudBounds.dispose();
     for (const texture of this.particleTextures) texture.dispose();
     this.preview.dispose();this.denoiser.dispose();this.exposureMeter.dispose();this.guideTarget.dispose();this.guideMaterial.dispose();

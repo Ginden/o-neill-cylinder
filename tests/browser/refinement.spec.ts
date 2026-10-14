@@ -73,13 +73,13 @@ test('denoises the static display without changing camera history or light-meter
   expect(result.retainedMeter).toBe(result.measured);
 });
 
-type FilterCase='haze'|'texture'|'cold'|'cloud'|'crown';
+type FilterCase='haze'|'texture'|'cold'|'speckle'|'edges';
 const filterCases:[FilterCase,string][]=[
   ['haze','does not imprint material colors on uniform atmospheric radiance'],
   ['texture','keeps surface texture under uniform illumination'],
   ['cold','fills a zero-contribution pixel using neighboring path uncertainty'],
-  ['cloud','removes isolated crown color speckles under clouds while preserving pane color'],
-  ['crown','filters rare bright paths on isolated crown normals without flattening material texture']
+  ['speckle','smooths a noisy pixel in color and luminance within its material'],
+  ['edges','keeps pane color separate from neighboring land']
 ];
 for(const [kind,title] of filterCases) test(title,async({page})=>{
   await openIsolatedPage(page);
@@ -94,10 +94,12 @@ for(const [kind,title] of filterCases) test(title,async({page})=>{
       medium.set([8,0,0,1],i*4);
       // A uniform foreground crosses contrasting fields and a mixed pixel.
       const anchors=i%size===8 ? [0.29,0.25,0.045] : i%size<8 ? [0.08,0.4,0.03] : [0.5,0.1,0.06];
-      const crown=(kind==='cloud' || kind==='crown') && i===size*8+4,pane=kind==='cloud' && i%size<2;
-      albedo.set([...anchors,crown ? 4 : pane ? 3 : kind!=='cloud' && i%size===8 ? -1 : 0],i*4);
+      const speckle=kind==='speckle' && i===size*8+4,pane=kind==='edges' && i%size<2;
+      // A mixed-coverage pixel joins every domain, so the pane case has none.
+      albedo.set([...anchors,pane ? 3 : kind!=='edges' && i%size===8 ? -1 : 0],i*4);
       const reflected=new THREE.Vector3(...anchors).applyMatrix3(MATERIAL_XYZ).multiplyScalar(illumination).toArray();
-      const surface=kind==='texture' || kind==='cloud' || kind==='crown' ? reflected : [0,0,0],light=kind==='texture' || kind==='cloud' || kind==='crown' ? [0,0,0] : haze;
+      const lit=kind==='texture' || kind==='speckle' || kind==='edges';
+      const surface=lit ? reflected : [0,0,0],light=lit ? [0,0,0] : haze;
       if(pane) surface.splice(0,3,0.002,0.04,0.1);
       const color=surface.map((value:number,c:number)=>value+light[c]);
       // Second moments include sampling variance around each mean. An all-zero
@@ -105,21 +107,16 @@ for(const [kind,title] of filterCases) test(title,async({page})=>{
       const variance=kind==='cold' ? 0.03 : 0.002;
       total.set([...color,surface[1]**2+variance],i*4);scattered.set([...light,light[1]**2+variance],i*4);
       expected.push(color);
-      // A rare spectral path in an isolated crown must borrow illumination
-      // color from surrounding diffuse land, without mixing specular panes.
-      if(crown) {total[i*4]*=5;total[i*4+2]*=0.1;}
-      if(crown && kind==='crown') {
-        geometry.set([1,0,0,8],i*4);
-        total[i*4+1]*=8;
-        total[i*4+3]=total[i*4+1]**2*samples;
-      }
+      // Sampling noise in one pixel: luminance and color both off, as a few
+      // four-wavelength samples would leave them.
+      if(speckle) {total[i*4]*=1.5;total[i*4+1]*=1.3;total[i*4+2]*=0.7;}
     }
     if(kind==='cold') {total.fill(0,(size*8+4)*4,(size*8+4)*4+4);scattered.fill(0,(size*8+4)*4,(size*8+4)*4+4);}
     const textures=[total,scattered,geometry,albedo,medium].map(data=>{
       const texture=new THREE.DataTexture(data,size,size,THREE.RGBAFormat,THREE.FloatType);texture.needsUpdate=true;return texture;
     });
     const renderer=new THREE.WebGLRenderer(),plane=new THREE.PlaneGeometry(2,2),filter=new DisplayDenoiser(plane);filter.resize(size,size);
-    const output=filter.filter(renderer,{textures:textures.slice(0,2)},{textures:textures.slice(2)},samples,kind==='cloud' || kind==='crown');
+    const output=filter.filter(renderer,{textures:textures.slice(0,2)},{textures:textures.slice(2)},samples);
     const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
     const material=new THREE.ShaderMaterial({uniforms:{image:{value:output}},depthTest:false,depthWrite:false,
       vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0,1);}',
@@ -133,5 +130,5 @@ for(const [kind,title] of filterCases) test(title,async({page})=>{
   },kind);
   await test.info().attach('filter-error',{body:JSON.stringify(result),contentType:'application/json'});
   expect(result.error).toBe(0);
-  expect(result.maximumError,JSON.stringify(result)).toBeLessThan(kind==='cold' || kind==='crown' ? 0.15 : kind==='cloud' ? 0.05 : 1e-5);
+  expect(result.maximumError,JSON.stringify(result)).toBeLessThan(kind==='cold' || kind==='speckle' ? 0.15 : kind==='edges' ? 0.05 : 1e-5);
 });
