@@ -5,6 +5,7 @@
 // base, which can sit 8 m above terrain within their 5.5 m radius on 1.5 slopes.
 const float CANOPY_TOP = 0.04;
 const float TREE_CELL = 0.008;
+const float CROWN_RADIUS = 0.00552; // 4.8 m × the maximum 1.15 size variation.
 const float HOUSE_CELL = 0.03;
 const float ROAD_HALF_WIDTH = 0.0035;
 
@@ -132,12 +133,12 @@ bool clearedObject(vec2 center, float extent, float top) {
   return length(offset) < uObjectClearing.z + extent * uRadius / (uRadius - top);
 }
 
-// Crowns are ellipsoids above their anchor's terrain. A 3 × 3 neighborhood is
-// exact to 4.9 m: crowns reach at most 5.5 m from a center jittered ±0.2 cells.
+// Crowns are ellipsoids above their anchor's terrain. The bound for objects
+// outside the 3 × 3 neighborhood shrinks with arc length above the wall.
 // `elevation` is the height of p above the wall, `scale` converts arc length.
 float treeDistance(vec2 g, float elevation, float scale, out vec2 nearest) {
   vec2 base = floor(g / TREE_CELL);
-  float best = 0.0049;
+  float best = 1.3*TREE_CELL*min(scale,1.0)-CROWN_RADIUS;
   nearest = vec2(-1e4);
   for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
     vec2 cell = base + vec2(i, j);
@@ -191,9 +192,20 @@ float houseDistance(vec2 g, float elevation, float scale, out float roof, out ve
   return min(max(horizontal, vertical), bound);
 }
 
-// Distance to trees and houses near p. Away from the canopy layer, or where a
-// 16 × 16-texel occupancy mip is empty, a conservative bound is returned
-// instead; it is never below 1 m, so it cannot register as a hit.
+// An empty linearly filtered mip texel guarantees half a mip cell of clearance
+// along each atlas axis. Subtract one base texel for bilinear anchor sampling,
+// then the object's footprint. Convert angular separation to a chord bound at
+// the smallest possible object radius, including terrain. Fixed metre bounds
+// are unsafe when a small habitat makes these texels smaller than a crown.
+float occupancyClearance(vec3 p,float level,float extent) {
+  vec2 texel=vec2(2.0*PI*uRadius,uLength)/vec2(textureSize(uLandCover,0));
+  vec2 gap=texel*(exp2(level-1.0)-1.0);
+  float radius=min(length(p.xy),max(0.0,uRadius-1.84*uTerrainHeight-CANOPY_TOP));
+  return min(radius*sin(min(gap.x/uRadius,PI*0.5)),gap.y)-extent;
+}
+
+// Distance to trees and houses near p. Empty occupancy mips can skip objects
+// only when their physical footprint guarantees at least 1 m of clearance.
 // kind: 0 none, 1 tree crown, 2 wall, 3 roof.
 // Paths after their second scattering event skip land-use objects; they carry
 // a few percent of the radiance and dominate the cost of marching crowns.
@@ -202,23 +214,23 @@ float objectDistance(vec3 p, float above, out float kind, out vec2 id) {
   kind = 0.0; id = vec2(0.0);
   if (!uLandUse || !landObjects || above < -0.003 || above > CANOPY_TOP + 0.01) return 1e3;
   vec2 g = groundCoordinates(p);
-  // An empty 16 × 16-texel mip block leaves at least 48 m of occupancy-free
-  // land around p; an 8 × 8 block leaves 24 m. An occupied texel lies within a
-  // texel diagonal (8.5 m) of each tree anchor, whose crown reaches 5.5 m;
-  // building occupancy is dilated over every house.
   vec2 uv = groundAtlas(g);
   vec4 occupied = textureLod(uLandCover, uv, 4.0);
-  if (occupied.a > 0.0 && textureLod(uLandCover, uv, 3.0).a == 0.0) occupied.a = -1.0;
+  float treeClearance=occupied.a==0.0 ? occupancyClearance(p,4.0,CROWN_RADIUS) : 0.0;
+  if (treeClearance<0.001 && textureLod(uLandCover, uv, 3.0).a==0.0)
+    treeClearance=max(treeClearance,occupancyClearance(p,3.0,CROWN_RADIUS));
+  float houseClearance=occupied.b==0.0 ? occupancyClearance(p,4.0,0.012) : 0.0;
+  bool traceTree=treeClearance<0.001,traceHouse=houseClearance<0.001;
   float radius = length(p.xy), scale = radius / uRadius;
   vec2 treeCell, houseCell;
   float roof = 0.0;
-  float tree = occupied.a > 0.0 ? treeDistance(g, uRadius - radius, scale, treeCell) : occupied.a < 0.0 ? 0.0095 : 0.033;
-  float house = occupied.b > 0.0 ? houseDistance(g, uRadius - radius, scale, roof, houseCell) : 0.03;
+  float tree = traceTree ? treeDistance(g, uRadius - radius, scale, treeCell) : min(treeClearance,0.033);
+  float house = traceHouse ? houseDistance(g, uRadius - radius, scale, roof, houseCell) : min(houseClearance,0.03);
   if (tree < house) {
-    if (occupied.a > 0.0 && treeCell.x > -1e3) {kind = 1.0; id = treeCell;}
+    if (traceTree && treeCell.x > -1e3) {kind = 1.0; id = treeCell;}
     return tree;
   }
-  if (occupied.b > 0.0) {kind = roof > 0.5 ? 3.0 : 2.0; id = houseCell;}
+  if (traceHouse) {kind = roof > 0.5 ? 3.0 : 2.0; id = houseCell;}
   return house;
 }
 

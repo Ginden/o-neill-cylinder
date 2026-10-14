@@ -203,6 +203,9 @@ therefore use a cache of the light that has already scattered at least once:
   diffusion equation instead. Light flows between the two regions through
   partial currents (a Marshak boundary condition).
 
+Unsaturated air has exactly zero condensate and does not activate this cache.
+Diffusion passes run only when the weather field contains deep cells.
+
 This is an approximation; the fine angular detail of light scattered more
 than twice in cloud is lost. It agrees with exact renders (see *Accuracy*)
 and makes cloudy scenes about 8× faster per sample.
@@ -261,11 +264,18 @@ path tracing in the mean (see *Accuracy*) and cuts noise per unit of work
 
 `WeatherSolver` is a coarse moist-convection model on a 24 × 24 × 48 grid:
 
-- semi-Lagrangian advection and a pressure projection (incompressible flow);
+- semi-Lagrangian advection and a pressure projection (incompressible flow),
+  using matching divergence and gradient operators with closed wall fluxes;
 - buoyancy in the centrifugal gravity field, including vapor and liquid
   water; Coriolis force;
 - heating and evaporation at sunlit ground;
 - saturation adjustment that conserves water and moist static energy.
+
+The pressure solve uses conjugate gradients on a precomputed sparse matrix,
+with the previous solution as its starting point. It targets a 10,000-fold
+reduction in divergence, bounded to 128 iterations per step; extreme grid
+aspect ratios can reach that limit before converging. Fully evaporated parcels
+are handled exactly, so unsaturated air does not accumulate numerical cloud water.
 
 Humid air condenses in the colder air near the axis. The *Humid afternoon*
 preset therefore grows a central cloud from its initial conditions; it is

@@ -36,13 +36,13 @@ describe('moist thermodynamics', () => {
   });
   it('evaporates cloud into dry air and cools the parcel', () => {
     const result = equilibrate(293.15,0.001,0.002,101325);
-    expect(result.cloud).toBeLessThan(1e-8);
+    expect(result.cloud).toBe(0);
     expect(result.vapor).toBeCloseTo(0.003, 7);
     expect(result.temperature).toBeCloseTo(288.17488, 4);
   });
   it('does not invent condensate for unsaturated vapor', () => {
     const result = equilibrate(293.15,0.005,0,101325);
-    expect(result.cloud).toBeLessThan(1e-9);
+    expect(result.cloud).toBe(0);
     expect(result.temperature).toBeCloseTo(293.15, 5);
   });
 });

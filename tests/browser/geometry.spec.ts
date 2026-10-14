@@ -97,6 +97,16 @@ test('marches terrain, trees and houses without skipping geometry',async({page})
       fragmentShader:source+`
         out vec4 outColor;
         float random(inout uint state) {state=state*747796405u+2891336453u;return float((state>>8u)&65535u)/65536.0;}
+        // The reference tests objects directly: reusing occupancy skipping here
+        // would let the same missing crown disappear from both estimators.
+        float referenceDistance(vec3 p) {
+          float above,base=baseDistance(p,above);
+          if (above < -0.003 || above > CANOPY_TOP+0.01) return base;
+          vec2 g=groundCoordinates(p),id;float roof,radius=length(p.xy);
+          float tree=treeDistance(g,uRadius-radius,radius/uRadius,id);
+          float house=houseDistance(g,uRadius-radius,radius/uRadius,roof,id);
+          return min(base,min(tree,house));
+        }
         void main(){
           uint state=uint(gl_FragCoord.x)*9781u+uint(gl_FragCoord.y)*6271u;
           // Points 2–25 m above woodland, hedgerows or villages around the valley
@@ -112,12 +122,12 @@ test('marches terrain, trees and houses without skipping geometry',async({page})
           p+=up*(terrainAt(p)+0.002+random(state)*0.023);
           float elevation=mix(-0.35,0.15,random(state)),azimuth=random(state)*2.0*PI;
           vec3 d=normalize(up*sin(elevation)+(vec3(up.y,-up.x,0.0)*cos(azimuth)+vec3(0,0,1)*sin(azimuth))*cos(elevation));
-          if (surfaceDistance(p)<0.0) {outColor=vec4(-1.0);return;}
+          if (referenceDistance(p)<0.0) {outColor=vec4(-1.0);return;}
           float traced=traceInterior(p,d),brute=1e3;
           for(int i=0;i<1500;i++){
             float t=float(i)*0.0005;
             if(t>min(traced+0.002,0.75)) break;
-            if(surfaceDistance(p+d*t)<0.0){brute=t;break;}
+            if(referenceDistance(p+d*t)<0.0){brute=t;break;}
           }
           outColor=vec4(traced,brute,0.0,1.0);
         }`});
@@ -138,6 +148,46 @@ test('marches terrain, trees and houses without skipping geometry',async({page})
   });
   expect(result.error).toBe(0);
   expect(result.rays).toBeGreaterThan(600);
+  expect(result.missed).toBe(0);
+});
+
+test('does not cull crowns when small-cylinder occupancy texels are narrower than the trees',async({page})=>{
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const threeModule='/node_modules/three/build/three.module.js',rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts';
+    const THREE=await import(threeModule),{HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule);
+    const source=(await Promise.all(['common','landscape','surface','geometry'].map(name=>fetch(`/src/render/shaders/${name}.glsl`).then(r=>r.text())))).join('\n');
+    const habitat=new HabitatRenderer(document.createElement('canvas'),{...defaults,radius:0.5,length:2,terrainHeight:0,quality:'balanced',clouds:false,paused:true});
+    habitat.preview.prepare(habitat.renderer);
+    const size=32,material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,depthTest:false,depthWrite:false,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',uniforms:habitat.material.uniforms,
+      fragmentShader:source+`
+        out vec4 outColor;
+        void main(){
+          // A crown overhangs an empty fine mip footprint at this forest edge.
+          vec2 g=vec2(1.8505311,0.97335815)+(gl_FragCoord.xy/32.0-0.5)*0.006;
+          float angle=g.x/uRadius+PI*0.5;
+          vec3 p=vec3((uRadius-0.01545586)*vec2(cos(angle),sin(angle)),g.y);
+          float radius=length(p.xy),roof,kind;vec2 id;
+          g=groundCoordinates(p);
+          float tree=treeDistance(g,uRadius-radius,radius/uRadius,id);
+          float house=houseDistance(g,uRadius-radius,radius/uRadius,roof,id);
+          outColor=vec4(min(tree,house),objectDistance(p,uRadius-radius,kind,id),0,1);
+        }`});
+    const target=new THREE.WebGLRenderTarget(size,size,{type:THREE.FloatType,depthBuffer:false});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    habitat.renderer.setRenderTarget(target);habitat.renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(size*size*4);habitat.renderer.readRenderTargetPixels(target,0,0,size,size,pixels);
+    let inside=0,missed=0;
+    for(let i=0;i<pixels.length;i+=4) if(pixels[i]<-0.0001) {
+      inside++;if(pixels[i+1]>0.00005) missed++;
+    }
+    const error=habitat.renderer.getContext().getError();
+    material.dispose();plane.dispose();target.dispose();habitat.dispose();
+    return {inside,missed,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.inside).toBeGreaterThan(10);
   expect(result.missed).toBe(0);
 });
 

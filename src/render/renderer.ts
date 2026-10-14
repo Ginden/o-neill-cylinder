@@ -107,6 +107,7 @@ export class HabitatRenderer {
   private readonly diffusionScene=new THREE.Scene();
   private weatherField?:WeatherField;
   private diffusionDirty=true;
+  private deepCloud=false;
   // Two float attachments like the camera and cache targets, of which only the
   // first is used: a pipeline per attachment layout would compile the tracer
   // again (2–3 s on SwiftShader).
@@ -306,6 +307,7 @@ export class HabitatRenderer {
     if (!this.populations) return;
     this.diffusionDirty=false;
     const {diffusion,absorption}=diffusionCells(this.weatherField,this.settings,this.populations);
+    this.deepCloud=diffusion.some(value=>value>0);
     this.diffusionTextures[0].image.data=diffusion;this.diffusionTextures[1].image.data=absorption;
     for (const texture of this.diffusionTextures) texture.needsUpdate=true;
   }
@@ -372,7 +374,7 @@ export class HabitatRenderer {
     this.cacheIndex=1-this.cacheIndex;this.cacheIteration++;
     // Deep cloud follows the diffusion solve, with transport cells as its boundary.
     const d=this.diffusionMaterial.uniforms;
-    for (let pass=0;pass<DIFFUSION_SWEEPS*2;pass++) {
+    for (let pass=0;this.deepCloud && pass<DIFFUSION_SWEEPS*2;pass++) {
       const from=this.cacheTargets[this.cacheIndex],to=this.cacheTargets[1-this.cacheIndex];
       d.uFluence.value=from.textures[0];d.uFlux.value=from.textures[1];d.uColor.value=pass%2;
       this.renderer.setRenderTarget(to);this.renderer.render(this.diffusionScene,this.screenCamera);

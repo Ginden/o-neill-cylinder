@@ -83,10 +83,11 @@ float traceInterior(vec3 p, vec3 d) {
     // hull is analytic, so rays leaving through a window step straight to it.
     float step=min(boundary-t,max(max(above,0.0)/approach,-landDistance));
     if (uLandUse && above>CANOPY_TOP+0.01) {
-      // Trees and roofs lie within CANOPY_TOP of the terrain; empty occupancy
-      // blocks guarantee 30 m of clearance in every direction.
+      // Trees and roofs lie within CANOPY_TOP of the terrain. Empty occupancy
+      // blocks offer extra clearance only at their actual physical scale.
       float canopy=(above-CANOPY_TOP)/approach;
-      if (canopy<step && above<0.25 && dot(textureLod(uLandCover,atlasCoordinates(q),4.0).ab,vec2(1))==0.0) canopy=max(canopy,0.027);
+      if (canopy<step && above<0.25 && dot(textureLod(uLandCover,atlasCoordinates(q),4.0).ab,vec2(1))==0.0)
+        canopy=max(canopy,min(0.027,occupancyClearance(q,4.0,0.012)));
       step=min(step,canopy);
     } else step=min(step,object*0.85);
     t+=max(EPS*0.5,min(step,uRadius/16.0));

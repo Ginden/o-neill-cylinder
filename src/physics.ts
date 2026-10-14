@@ -50,6 +50,13 @@ export function saturationMixingRatio(temperature: number, pressure: number): nu
 export function equilibrate(temperature: number, vapor: number, cloud: number, pressure: number) {
   if (pressure <= 0) return { temperature, vapor: 0, cloud: 0 };
   const total = vapor + cloud;
+  // Test the fully evaporated endpoint, including its latent cooling. Bisection
+  // never reaches this endpoint exactly and would invent a little condensate
+  // in every unsaturated parcel, enough to activate the renderer's cloud cache.
+  const evaporatedTemperature = temperature - LATENT_HEAT * cloud / HEAT_CAPACITY;
+  if (total <= saturationMixingRatio(evaporatedTemperature, pressure)) {
+    return { temperature: evaporatedTemperature, vapor: total, cloud: 0 };
+  }
   const energy = HEAT_CAPACITY * temperature + LATENT_HEAT * vapor;
   let lo = 0;
   let hi = total;
