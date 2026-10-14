@@ -38,11 +38,12 @@ const DIFFUSION_SWEEPS=16,DIFFUSION_RELAXATION=1.8;
 const CACHE_BANDS=8;
 // Light that has scattered or reflected at least once, on the wall and endcaps,
 // for the raster preview (atlas layout in geometry.glsl). It varies slowly:
-// about 200 m texels, one draw of 24576 paths per sample. Path tracing spends
-// an eighth of its paths on it until SURFACE_FILL samples, then a thirty-second;
-// navigation frames add a sample each until then. Static scenes stop at
-// SURFACE_SAMPLES; live weather keeps a running average.
-const SURFACE_WIDTH=128,SURFACE_HEIGHT=192,SURFACE_PATHS=SURFACE_WIDTH*SURFACE_HEIGHT;
+// about 200 m texels, 24576 paths per sample, traced in bands of 3072 so that
+// no submission, least of all a navigation frame, waits long. Path tracing
+// spends an eighth of its paths on it until SURFACE_FILL samples, then a
+// thirty-second; navigation frames add a band each until then. Static scenes
+// stop at SURFACE_SAMPLES; live weather keeps a running average.
+const SURFACE_WIDTH=128,SURFACE_HEIGHT=192,SURFACE_BANDS=8,SURFACE_BAND_PATHS=SURFACE_WIDTH*SURFACE_HEIGHT/SURFACE_BANDS;
 const SURFACE_FILL=32,SURFACE_SAMPLES=256,SURFACE_WINDOW=16;
 
 export class HabitatRenderer {
@@ -105,6 +106,7 @@ export class HabitatRenderer {
   private readonly surfaceTargets=[0,1].map(()=>new THREE.WebGLRenderTarget(SURFACE_WIDTH,SURFACE_HEIGHT,
     {type:THREE.FloatType,wrapS:THREE.RepeatWrapping,depthBuffer:false,stencilBuffer:false}));
   private surfaceIndex=0;
+  private surfaceBand=0;
   private surfaceSample=0;
   private surfaceHistory=0;
   private surfaceBudget=0;
@@ -314,7 +316,7 @@ export class HabitatRenderer {
 
   /** The preview shows no scattered light from earlier settings. */
   private resetSurface() {
-    this.surfaceSample=0;this.surfaceHistory=0;
+    this.surfaceSample=0;this.surfaceHistory=0;this.surfaceBand=0;
     this.clearTargets(this.surfaceTargets);
   }
 
@@ -358,17 +360,22 @@ export class HabitatRenderer {
     u.uCacheFluence.value=current.textures[0];u.uCacheFlux.value=current.textures[1];
   }
 
-  /** Traces the next sample of the preview's surface light. */
+  /** Traces one band of the next sample of the preview's surface light; the
+   * preview keeps the previous complete sample until every band is done. */
   private advanceSurface(cacheActive:boolean,bounded:boolean) {
     if (!bounded && this.surfaceHistory>=SURFACE_SAMPLES) return;
     const u=this.material.uniforms;
+    const target=this.surfaceTargets[1-this.surfaceIndex],rows=SURFACE_HEIGHT/SURFACE_BANDS;
     const history=bounded ? Math.min(this.surfaceHistory,SURFACE_WINDOW-1) : this.surfaceHistory;
     u.uSurfacePass.value=true;u.uDropletLimit.value=cacheActive ? CAMERA_DROPLETS : 0;
     u.uSurfaceSample.value=this.surfaceSample;u.uSurfaceHistory.value=history;
     u.uPreviousSurface.value=this.surfaceTargets[this.surfaceIndex].texture;
-    this.surfaceIndex=1-this.surfaceIndex;
-    this.renderer.setRenderTarget(this.surfaceTargets[this.surfaceIndex]);this.renderer.render(this.scene,this.screenCamera);
+    target.scissorTest=true;target.scissor.set(0,this.surfaceBand*rows,SURFACE_WIDTH,rows);
+    this.renderer.setRenderTarget(target);this.renderer.render(this.scene,this.screenCamera);
+    target.scissorTest=false;
     this.renderer.setRenderTarget(null);u.uSurfacePass.value=false;
+    if (++this.surfaceBand<SURFACE_BANDS) return;
+    this.surfaceBand=0;this.surfaceIndex=1-this.surfaceIndex;
     this.surfaceHistory=history+1;this.surfaceSample++;
     u.uSurfaceLight.value=this.surfaceTargets[this.surfaceIndex].texture;
   }
@@ -456,8 +463,8 @@ export class HabitatRenderer {
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.screenCamera);
     this.renderer.setRenderTarget(null);
-    this.surfaceBudget=Math.min(SURFACE_PATHS,this.surfaceBudget+target.width*(top-bottom)/(this.surfaceSample<SURFACE_FILL ? 8 : 32));
-    if (natural && this.surfaceBudget>=SURFACE_PATHS) {this.surfaceBudget-=SURFACE_PATHS;this.advanceSurface(cacheActive,bounded);}
+    this.surfaceBudget=Math.min(SURFACE_BANDS*SURFACE_BAND_PATHS,this.surfaceBudget+target.width*(top-bottom)/(this.surfaceSample<SURFACE_FILL ? 8 : 32));
+    while (natural && this.surfaceBudget>=SURFACE_BAND_PATHS) {this.surfaceBudget-=SURFACE_BAND_PATHS;this.advanceSurface(cacheActive,bounded);}
     if (++this.band<this.bands) {
       this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
       return false;

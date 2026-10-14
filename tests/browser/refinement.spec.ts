@@ -48,10 +48,12 @@ test('lights the navigation preview with scattered light where no sunlight falls
       for(let i=0;i<data.length/2;i+=4) if(Math.max(data[i],data[i+1],data[i+2])>=3) lit++;
       return lit/(data.length/8);
     };
-    // The first preview frame has direct sunlight only; each further frame adds a traced sample.
+    // The first preview frame has direct sunlight only; each frame traces a band
+    // of the scattered light, and complete samples become visible.
     await preview();
     const direct=litLand();
-    for(let frame=0;frame<8;frame++) await preview();
+    while(renderer['surfaceHistory']<4) await preview();
+    await preview();
     const scattered=litLand(),filled=renderer['surfaceHistory'];
     // Navigation keeps the light, which does not depend on the camera.
     renderer.camera.rotateY(0.3);await preview();
@@ -63,7 +65,7 @@ test('lights the navigation preview with scattered light where no sunlight falls
   expect(result.error).toBe(0);
   expect(result.direct).toBeLessThan(0.05);
   expect(result.scattered).toBeGreaterThan(0.5);
-  expect(result.afterTurn).toBe(result.filled+1);
+  expect(result.afterTurn).toBeGreaterThanOrEqual(result.filled);
 });
 
 test('denoises the static display without changing camera history or light-meter data',async({page})=>{
