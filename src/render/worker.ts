@@ -17,6 +17,7 @@ let appliedState = '';
 let size = '';
 let previous = performance.now();
 let lastStats = 0;
+let lastReport = '';
 let lastRate = 0;
 let frames = 0;
 let paths = 0;
@@ -81,7 +82,6 @@ function frame(now: number) {
       }
       renderer.camera.position.fromArray(state.position);
       renderer.camera.quaternion.fromArray(state.quaternion);
-      const samples = renderer.samples;
       if (renderer.render(state.interacting)) {
         frames++;
         if (renderer.mode === 'path') paths++;
@@ -92,13 +92,16 @@ function frame(now: number) {
         sampleRate = paths * 1000 / (now - lastRate);
         frames = 0; paths = 0; lastRate = now;
       }
-      if (now - lastStats >= 100 || (samples === 0 && renderer.samples > 0)) {
+      // Every change of the image's state is reported as it happens; readouts
+      // also refresh ten times a second.
+      const report = [renderer.samples, renderer.mode, renderer.raySize, renderer.accumulation].join();
+      if (report !== lastReport || now - lastStats >= 100) {
         post({ type: 'stats', stats: {
-          samples: renderer.samples, mode: renderer.mode, raySize: renderer.raySize,
+          samples: renderer.samples, mode: renderer.mode, raySize: renderer.raySize, accumulation: renderer.accumulation,
           luminance: renderer.luminance(), clearAirBlueExtinction: renderer.clearAirBlueExtinction,
           weather: weather.stats, fps, sampleRate
         } });
-        lastStats = now;
+        lastStats = now; lastReport = report;
       }
     }
     if (visible) {

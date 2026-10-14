@@ -1,23 +1,26 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { canvasPixels as pixels, captureErrors, waitForScene } from './canvas';
+// Pixel statistics come from the image the worker drew for the reported sample.
+import { captureErrors, renderReport, savedPixels as pixels, untilRender, waitForScene } from './canvas';
 
 const errors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => { errors.set(page, captureErrors(page)); });
 test.afterEach(({ page }) => { expect(errors.get(page)).toEqual([]); });
 
-async function settleRender(page: Page) {
-  const canvas = page.locator('#scene');
-  const previous = await canvas.getAttribute('data-samples');
-  await expect.poll(() => canvas.getAttribute('data-samples')).not.toBe(previous);
+/** Waits for the first sample rendered after `change`, or for the next sample. */
+async function settleRender(page: Page, change?: () => Promise<unknown>) {
+  const before = await renderReport(page);
+  if (!change) return untilRender(page, { samplesAbove: before.samples });
+  await change();
+  await untilRender(page, { accumulationAbove: before.accumulation, samplesAbove: 0 });
 }
 
 test('renders a varied landscape without shader errors and exposes physical comparisons', async ({ page }) => {
   // Fast rendering makes this a shader correctness check even on software graphics.
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
   await waitForScene(page);
-  await expect(page.locator('#scene')).toHaveAttribute('data-mode','path');
+  await untilRender(page, { mode:'path' });
   await settleRender(page);
   expect(errors.get(page)).toEqual([]);
   const natural = await pixels(page);
@@ -25,19 +28,16 @@ test('renders a varied landscape without shader errors and exposes physical comp
   expect(natural.mean).toBeGreaterThan(10);
   await page.screenshot({ path:'test-results/clear-daylight.png' });
   await page.getByRole('tab',{ name:'display',exact:true }).click();
-  await page.locator('#diagnostic').selectOption('transmission');
-  await settleRender(page);
+  await settleRender(page, () => page.locator('#diagnostic').selectOption('transmission'));
   const air = await pixels(page);
   expect(air.min).toBeLessThan(240);
-  await page.locator('#atmosphere').uncheck();
-  // A pending GPU pass keeps the previous frame on screen until it completes.
-  await expect.poll(async () => (await pixels(page)).min, { timeout: 20000 }).toBeGreaterThan(253);
+  await settleRender(page, () => page.locator('#atmosphere').uncheck());
   const vacuum = await pixels(page);
+  expect(vacuum.min).toBeGreaterThan(253);
   expect(vacuum.mean).toBeGreaterThan(air.mean+3);
   await page.locator('#atmosphere').check();
   await page.locator('#diagnostic').selectOption('natural');
-  await page.getByRole('button',{ name:'Axis',exact:true }).click();
-  await settleRender(page);
+  await settleRender(page, () => page.getByRole('button',{ name:'Axis',exact:true }).click());
   await page.screenshot({ path:'test-results/axis-view.png' });
   await page.getByRole('button',{ name:'Model & assumptions ↗' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -87,7 +87,7 @@ test('keeps the experiment usable on a narrow screen', async ({ page }) => {
   await page.setViewportSize({ width:390,height:844 });
   await page.goto('/?s='+Buffer.from(JSON.stringify({ quality:'fast',clouds:false,paused:true })).toString('base64'));
   await waitForScene(page);
-  await expect(page.locator('#scene')).toHaveAttribute('data-mode','path');
+  await untilRender(page, { mode:'path' });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBe(false);
   await page.screenshot({ path:'test-results/mobile.png',fullPage:true });
@@ -99,7 +99,7 @@ test('keeps the experiment usable on a narrow screen', async ({ page }) => {
 test('keeps an unlit habitat dark at the same camera exposure',async({page})=>{
   await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true,solarPower:0,view:'axis',adaptiveExposure:false})).toString('base64'));
   await waitForScene(page);
-  await expect(page.locator('#scene')).toHaveAttribute('data-mode','path');
+  await untilRender(page, { mode:'path' });
   await settleRender(page);
   const dark=await pixels(page);
   expect(dark.mean).toBeLessThan(1);

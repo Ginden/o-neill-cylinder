@@ -16,6 +16,8 @@ export interface RenderStats {
   samples: number;
   mode: 'preview' | 'path';
   raySize: string;
+  /** Increments whenever accumulated samples are discarded. */
+  accumulation: number;
   luminance: number | null;
   clearAirBlueExtinction: number;
   weather: WeatherStats;

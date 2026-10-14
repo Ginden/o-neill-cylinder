@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { openIsolatedPage } from './isolated';
-import { captureErrors, waitForScene } from './canvas';
+import { captureErrors, renderReport, untilRender, waitForScene } from './canvas';
 
 test('parallel optics agree with serial tables and discard superseded particle sizes', async ({ page }) => {
   await openIsolatedPage(page);
@@ -41,19 +41,16 @@ test('exports the worker canvas after resizing and changing quality', async ({ p
   await page.goto('/?s=' + Buffer.from(JSON.stringify({ quality: 'fast', clouds: false, paused: true })).toString('base64'));
   await waitForScene(page);
   const canvas = page.locator('#scene');
-  await expect.poll(async () => Number(await canvas.getAttribute('data-samples'))).toBeGreaterThan(2);
-  const firstSize = await canvas.getAttribute('data-ray-size');
+  await untilRender(page, { samplesAbove: 2 });
+  const firstSize = (await renderReport(page)).raySize;
   await page.setViewportSize({ width: 900, height: 700 });
   await page.getByRole('tab', { name: 'display', exact: true }).click();
   await page.locator('#quality').selectOption('balanced');
-  await expect.poll(() => canvas.getAttribute('data-ray-size')).not.toBe(firstSize);
-  // Balanced changes the atlas as well as the ray budget; SwiftShader may
-  // need several seconds to bake it before the resized image is presented.
-  await page.waitForFunction(() => {
-    const node = document.querySelector<HTMLCanvasElement>('#scene')!;
-    const expected = `${Math.floor(node.clientWidth * devicePixelRatio)}×${Math.floor(node.clientHeight * devicePixelRatio)}`;
-    return node.dataset.raySize === expected && Number(node.dataset.samples) > 0;
-  });
+  await untilRender(page, { raySizeNot: firstSize });
+  // Balanced traces every display pixel; wait for a sample of that image.
+  const expected = await canvas.evaluate((node: HTMLCanvasElement) =>
+    `${Math.floor(node.clientWidth * devicePixelRatio)}×${Math.floor(node.clientHeight * devicePixelRatio)}`);
+  await untilRender(page, { raySize: expected, samplesAbove: 0 });
   const dimensions = await canvas.evaluate((node: HTMLCanvasElement) => ({ width: node.width, height: node.height }));
   const downloadEvent = page.waitForEvent('download');
   await page.getByRole('button', { name: /^Save image/ }).click();

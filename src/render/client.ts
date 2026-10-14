@@ -19,7 +19,7 @@ export class RenderClient {
   private nextScreenshot = 0;
   private readonly screenshots = new Map<number, { resolve: (blob: Blob) => void; reject: (error: Error) => void }>();
   stats: RenderStats = {
-    samples: 0, mode: 'preview', raySize: '', luminance: null, clearAirBlueExtinction: 0,
+    samples: 0, mode: 'preview', raySize: '', accumulation: 0, luminance: null, clearAirBlueExtinction: 0,
     weather: { seconds: 0, maxWind: 0, cloudMass: 0, cloudFraction: 0, maxTemperatureAnomaly: 0 },
     fps: 0, sampleRate: 0
   };
@@ -36,6 +36,10 @@ export class RenderClient {
         canvas.dataset.samples = String(data.stats.samples);
         canvas.dataset.mode = data.stats.mode;
         canvas.dataset.raySize = data.stats.raySize;
+        canvas.dataset.accumulation = String(data.stats.accumulation);
+        // Each new sample, mode or image size is an event: scripts and tests
+        // wait for it instead of polling.
+        canvas.dispatchEvent(new CustomEvent<RenderStats>('renderstate', { detail: data.stats }));
       } else if (data.type === 'screenshot') {
         this.screenshots.get(data.id)!.resolve(data.blob);
         this.screenshots.delete(data.id);

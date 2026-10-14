@@ -1,5 +1,5 @@
 import {openIsolatedPage} from './isolated';
-import {canvasPixels,captureErrors,waitForScene} from './canvas';
+import {canvasPixels,captureErrors,renderReport,untilRender,waitForScene} from './canvas';
 import {expect,test} from '@playwright/test';
 import {writeFile} from 'node:fs/promises';
 
@@ -8,23 +8,21 @@ test('uses raster navigation during interaction and resumes static accumulation'
   await page.goto('/?s='+Buffer.from(JSON.stringify({quality:'fast',clouds:false,paused:true})).toString('base64'));
   await waitForScene(page);
   const canvas=page.locator('#scene');
-  await expect.poll(()=>canvas.getAttribute('data-mode')).toBe('path');
-  await expect.poll(async()=>Number(await canvas.getAttribute('data-samples'))).toBeGreaterThan(3);
+  await untilRender(page,{mode:'path',samplesAbove:3});
   const box=(await canvas.boundingBox())!;
   await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
   await page.mouse.down();
   await page.mouse.move(box.x+box.width/2+80,box.y+box.height/2+20,{steps:8});
-  await expect.poll(()=>canvas.getAttribute('data-mode')).toBe('preview');
-  const during=Number(await canvas.getAttribute('data-samples'));
+  await untilRender(page,{mode:'preview'});
+  const during=(await renderReport(page)).samples;
   await page.evaluate(()=>new Promise<void>(resolve=>{
     let frames=0;function frame(){if(++frames>=6) resolve();else requestAnimationFrame(frame);}requestAnimationFrame(frame);
   }));
-  expect(Number(await canvas.getAttribute('data-samples'))).toBe(during);
+  expect((await renderReport(page)).samples).toBe(during);
   const preview=await canvasPixels(page);
   expect(preview.max-preview.min).toBeGreaterThan(50);
   await page.mouse.up();
-  await expect.poll(()=>canvas.getAttribute('data-mode')).toBe('path');
-  await expect.poll(async()=>Number(await canvas.getAttribute('data-samples'))).toBeGreaterThan(during+3);
+  await untilRender(page,{mode:'path',samplesAbove:during+3});
   expect(errors).toEqual([]);
 });
 

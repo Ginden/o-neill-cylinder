@@ -84,7 +84,8 @@ export class HabitatRenderer {
   private frameFence:WebGLSync|null=null;
   private meterBusy=false;
   private meterValue:number|null=null;
-  private revision=0;
+  /** Increments whenever accumulated samples are discarded. */
+  accumulation=0;
   private weatherRevision=-1;
   private liveWeather=false;
   private cloudMass=0;
@@ -103,8 +104,11 @@ export class HabitatRenderer {
   private readonly diffusionScene=new THREE.Scene();
   private weatherField?:WeatherField;
   private diffusionDirty=true;
+  // Two float attachments like the camera and cache targets, of which only the
+  // first is used: a pipeline per attachment layout would compile the tracer
+  // again (2–3 s on SwiftShader).
   private readonly surfaceTargets=[0,1].map(()=>new THREE.WebGLRenderTarget(SURFACE_WIDTH,SURFACE_HEIGHT,
-    {type:THREE.FloatType,wrapS:THREE.RepeatWrapping,depthBuffer:false,stencilBuffer:false}));
+    {count:2,type:THREE.FloatType,wrapS:THREE.RepeatWrapping,depthBuffer:false,stencilBuffer:false}));
   private surfaceIndex=0;
   private surfaceBand=0;
   private surfaceSample=0;
@@ -156,8 +160,8 @@ export class HabitatRenderer {
         uDiagnostic: { value: 0 }, uSample:{value:0},uHistory:{value:0},uPrevious:{value:this.targets[0].textures[0]},uPreviousHaze:{value:this.targets[0].textures[1]},
         uDropletLimit:{value:0},uCachePass:{value:false},uCacheIteration:{value:0},uCacheBlend:{value:1},uCloudAsymmetry:{value:0.86},
         uCacheFluence:{value:this.cacheTargets[0].textures[0]},uCacheFlux:{value:this.cacheTargets[0].textures[1]},uCacheDiffusion:{value:this.diffusionTextures[0]},
-        uSurfacePass:{value:false},uPreviousSurface:{value:this.surfaceTargets[0].texture},uSurfaceSample:{value:0},uSurfaceHistory:{value:0},
-        uSolarBands:{value:SOLAR_BANDS},uSurfaceLight:{value:this.surfaceTargets[0].texture}
+        uSurfacePass:{value:false},uPreviousSurface:{value:this.surfaceTargets[0].textures[0]},uSurfaceSample:{value:0},uSurfaceHistory:{value:0},
+        uSolarBands:{value:SOLAR_BANDS},uSurfaceLight:{value:this.surfaceTargets[0].textures[0]}
       }
     });
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
@@ -301,7 +305,7 @@ export class HabitatRenderer {
     for (const texture of this.diffusionTextures) texture.needsUpdate=true;
   }
 
-  private resetAccumulation() {this.samples=0;this.historySamples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.revision++;}
+  private resetAccumulation() {this.samples=0;this.historySamples=0;this.band=0;this.meterValue=null;this.exposureMeter.invalidate();this.guidesDirty=true;this.accumulation++;}
 
   /** The cache holds only scattered light from clouds; it does not depend on the camera. */
   private get cacheActive() {
@@ -369,7 +373,7 @@ export class HabitatRenderer {
     const history=bounded ? Math.min(this.surfaceHistory,SURFACE_WINDOW-1) : this.surfaceHistory;
     u.uSurfacePass.value=true;u.uDropletLimit.value=cacheActive ? CAMERA_DROPLETS : 0;
     u.uSurfaceSample.value=this.surfaceSample;u.uSurfaceHistory.value=history;
-    u.uPreviousSurface.value=this.surfaceTargets[this.surfaceIndex].texture;
+    u.uPreviousSurface.value=this.surfaceTargets[this.surfaceIndex].textures[0];
     target.scissorTest=true;target.scissor.set(0,this.surfaceBand*rows,SURFACE_WIDTH,rows);
     this.renderer.setRenderTarget(target);this.renderer.render(this.scene,this.screenCamera);
     target.scissorTest=false;
@@ -377,7 +381,7 @@ export class HabitatRenderer {
     if (++this.surfaceBand<SURFACE_BANDS) return;
     this.surfaceBand=0;this.surfaceIndex=1-this.surfaceIndex;
     this.surfaceHistory=history+1;this.surfaceSample++;
-    u.uSurfaceLight.value=this.surfaceTargets[this.surfaceIndex].texture;
+    u.uSurfaceLight.value=this.surfaceTargets[this.surfaceIndex].textures[0];
   }
 
   private updateBands(width:number,height:number) {
@@ -485,12 +489,12 @@ export class HabitatRenderer {
     if(this.mode==='preview' || this.samples===0) return null;
     if(this.meterBusy) return this.meterValue;
     this.meterBusy=true;
-    const revision=this.revision;
+    const accumulation=this.accumulation;
     const target=this.targets[this.targetIndex];
     const pixels=new Float32Array(5*5*4);
     void this.renderer.readRenderTargetPixelsAsync(target,Math.floor(target.width/2)-2,Math.floor(target.height/2)-2,5,5,pixels)
       .then(()=>{
-        if(revision!==this.revision) return;
+        if(accumulation!==this.accumulation) return;
         let sum=0;for(let i=1;i<pixels.length;i+=4) sum+=pixels[i];
         this.meterValue=sum/25*SOLAR_ILLUMINANCE;
       }).finally(()=>{this.meterBusy=false;});
