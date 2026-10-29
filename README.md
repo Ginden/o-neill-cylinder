@@ -12,7 +12,7 @@ Source: [github.com/Ginden/o-neill-cylinder](https://github.com/Ginden/o-neill-c
 
 ## Quick start
 
-Needs Node.js 24+ and a browser with WebGL 2 and float render targets
+Needs Node.js 26+ and a browser with WebGL 2 and float render targets
 (`EXT_color_buffer_float`); any recent desktop Chrome or Firefox does.
 
 ```sh
