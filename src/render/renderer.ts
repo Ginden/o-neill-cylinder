@@ -129,7 +129,8 @@ export class HabitatRenderer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     if (!this.renderer.extensions.has('EXT_color_buffer_float')) throw new Error('Floating-point render targets are required for physical light accumulation.');
-    this.weather = new THREE.Data3DTexture(new Float32Array(4), 1, 1, 1);
+    this.weather = new THREE.Data3DTexture(new Float32Array(1), 1, 1, 1);
+    this.weather.format=THREE.RedFormat;
     this.configureTexture(this.weather);
     this.cloudBounds = new THREE.Data3DTexture(new Float32Array(8),2,2,2);
     this.cloudBounds.format=THREE.RedFormat;
@@ -209,6 +210,7 @@ export class HabitatRenderer {
     if (this.weather.image.width !== x) {
       this.weather.dispose();
       this.weather = new THREE.Data3DTexture(snapshot.data, x, y, z);
+      this.weather.format=THREE.RedFormat;
       this.configureTexture(this.weather);
       this.material.uniforms.uWeather.value = this.weather;
     } else {
@@ -498,7 +500,7 @@ export class HabitatRenderer {
     this.band=0;this.targetIndex=1-this.targetIndex;this.guidesDirty=false;
     this.displayMaterial.uniforms.uImage.value=this.denoise && this.material.uniforms.uDiagnostic.value===0
       ? this.denoiser.filter(this.renderer,target,this.guideTarget,history+1) : target.textures[0];
-    if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples+1)%8===0)
+    if(this.adaptiveExposure && this.material.uniforms.uDiagnostic.value===0 && (this.samples===0 || (this.samples+1)%8===0))
       this.exposureMeter.measure(this.renderer,target.textures[0]);
     this.renderer.render(this.displayScene,this.screenCamera);
     this.historySamples=history+1;

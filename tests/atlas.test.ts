@@ -10,11 +10,13 @@ describe('ground atlas', () => {
       expect(width % 32).toBe(0);
       expect(height % 32).toBe(0);
       expect(height).toBeLessThanOrEqual(limit);
-      expect(height).toBeGreaterThanOrEqual(256);
+      expect(height).toBeGreaterThanOrEqual(32);
+      expect(width).toBeLessThanOrEqual(limit);
+      expect(width).toBeGreaterThanOrEqual(32);
     }
   });
-  it('uses nearly square texels in the default habitat', () => {
-    const [width, height] = atlasSize(4, 24, 4096);
-    expect((2 * Math.PI * 4 / width) / (24 / height)).toBeCloseTo(1, 1);
+  it.each([[4, 24], [0.5, 80], [20, 2]])('uses nearly square texels at radius %s and length %s', (radius, length) => {
+    const [width, height] = atlasSize(radius, length, 4096);
+    expect((2 * Math.PI * radius / width) / (length / height)).toBeCloseTo(1, 1);
   });
 });

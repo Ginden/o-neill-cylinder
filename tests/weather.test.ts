@@ -103,12 +103,35 @@ describe('moist convection solver', () => {
     expect(energy()).toBeGreaterThan(before * 0.99);
     expect(solver.divergenceRms()).toBeLessThan(divergence * 0.001);
   });
+  it('preserves uniform optical fog at the curved wall without adding mass', () => {
+    const solver = new WeatherSolver({ ...defaults, humidity:0 });
+    const liquid = 0.001;
+    for (let i = 0; i < solver.count; i++) if (solver.active[i]) {
+      const density = solver.baseP[i] / (287.05 * (solver.baseT[i] + solver.temperature[i]));
+      solver.cloud[i] = liquid / density;
+    }
+    const { data, stats } = solver.snapshot();
+    expect(stats.cloudMass).toBeCloseTo(solver.active.reduce((sum, active) => sum + active, 0) * liquid * solver.dx * solver.dy * solver.dz, -2);
+    expect(stats.cloudFraction).toBe(1);
+    const sample = (theta: number) => {
+      const radius = defaults.radius * 1000 - 10;
+      const gx = Math.max(0, Math.min(solver.nx-1, (radius*Math.cos(theta)/solver.dx + solver.nx/2 - 0.5)));
+      const gy = Math.max(0, Math.min(solver.ny-1, (radius*Math.sin(theta)/solver.dy + solver.ny/2 - 0.5)));
+      const ix = Math.min(solver.nx-2, Math.floor(gx)), iy = Math.min(solver.ny-2, Math.floor(gy));
+      let value = 0;
+      for (let y=0;y<2;y++) for (let x=0;x<2;x++) {
+        value += data[ix+x+solver.nx*(iy+y+solver.ny*12)] * (x ? gx-ix : 1-gx+ix) * (y ? gy-iy : 1-gy+iy);
+      }
+      return value;
+    };
+    // Include every angle so the diagonal interpolation corners are covered.
+    for (let degrees=0;degrees<360;degrees++) expect(sample(degrees*Math.PI/180)).toBeCloseTo(liquid, 7);
+  });
   it('keeps vacuum free of water and optical density', () => {
     const solver = new WeatherSolver({ ...defaults,pressure:0 });
     solver.step(3);
     const snapshot = solver.snapshot();
     expect(snapshot.stats.cloudMass).toBe(0);
-    const densities = snapshot.data.filter((_,i) => i%4 === 3);
-    expect(Math.max(...densities)).toBe(0);
+    expect(Math.max(...snapshot.data)).toBe(0);
   });
 });

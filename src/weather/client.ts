@@ -2,6 +2,7 @@ import type { Settings } from '../settings';
 import type { WeatherStats } from './solver';
 
 export interface WeatherSnapshot {
+  /** Liquid-water density in kg/m³, one value per grid cell. */
   data: Float32Array;
   stats: WeatherStats;
   dimensions: readonly [number, number, number];

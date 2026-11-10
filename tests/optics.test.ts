@@ -74,14 +74,14 @@ describe('sunlight reflected by panes',()=>{
 
 describe('heterogeneous medium bounds',()=>{
   it('bounds every trilinear cell, including clamped edges and a narrow dense cloud',()=>{
-    const n=3,data=new Float32Array(n*n*n*4);
-    data[(1+n*(1+n))*4]=0.002;
+    const n=3,data=new Float32Array(n*n*n);
+    data[1+n*(1+n)]=0.002;
     const bounds=cloudMajorants(data,[n,n,n]);
     for (let z=0;z<=n;z++) for (let y=0;y<=n;y++) for (let x=0;x<=n;x++) {
       let interpolated=0;
       for (let dz=0;dz<2;dz++) for (let dy=0;dy<2;dy++) for (let dx=0;dx<2;dx++) {
         const ix=Math.max(0,Math.min(n-1,x-1+dx)),iy=Math.max(0,Math.min(n-1,y-1+dy)),iz=Math.max(0,Math.min(n-1,z-1+dz));
-        interpolated+=data[(ix+n*(iy+n*iz))*4]/8*150000;
+        interpolated+=data[ix+n*(iy+n*iz)]/8*150000;
       }
       expect(bounds[x+(n+1)*(y+(n+1)*z)]).toBeGreaterThanOrEqual(interpolated);
     }

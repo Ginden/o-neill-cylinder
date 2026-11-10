@@ -37,7 +37,7 @@ function makeWeatherSampling(dimensions:WeatherField['dimensions']) {
       const ix=Math.min(nx-2,Math.floor(gx)),iy=Math.min(ny-2,Math.floor(gy)),fx=gx-ix,fy=gy-iy;
       for (let y=0;y<2;y++) for (let x=0;x<2;x++) {
         const offset=(i*CACHE_ANGULAR+j)*4+y*2+x;
-        xyIndices[offset]=((ix+x)+nx*(iy+y))*4;
+        xyIndices[offset]=(ix+x)+nx*(iy+y);
         xyWeights[offset]=(x ? fx : 1-fx)*(y ? fy : 1-fy);
       }
     }
@@ -45,7 +45,7 @@ function makeWeatherSampling(dimensions:WeatherField['dimensions']) {
   for (let k=0;k<CACHE_AXIAL;k++) {
     const gz=coordinate((k+0.5)/CACHE_AXIAL,nz),iz=Math.min(nz-2,Math.floor(gz)),fz=gz-iz;
     for (let z=0;z<2;z++) {
-      zIndices[k*2+z]=(iz+z)*nx*ny*4;
+      zIndices[k*2+z]=(iz+z)*nx*ny;
       zWeights[k*2+z]=z ? fz : 1-fz;
     }
   }

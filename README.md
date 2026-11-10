@@ -20,7 +20,7 @@ npm ci
 npm run dev        # then open http://127.0.0.1:5173/
 ```
 
-The first load compiles a large shader: expect 10–20 s with a cold driver
+The first load compiles a large shader: expect about 27 s on an RTX 5070 with a cold driver
 cache. Software rendering works but is slow.
 
 ## Using the lab
@@ -78,7 +78,10 @@ raw sampling noise.
 | `npm run test:render` | The filter and cloud subset of the browser tests (seconds) |
 | `npm run preview` | Serve the production build |
 | `node scripts/benchmark.mjs` | Measure samples/s and UI cadence on real hardware (see below) |
+| `node scripts/profile-gpu.mjs <mode>` | Pass GPU timings, cold compile and atlas checks; run one renderer at a time (same environment as benchmark) |
 | `node scripts/benchmark-weather.mjs` | Measure CPU weather steps and cloud-cache coefficient refreshes |
+
+The GPU profiler accepts `compile`, `perf`, `extra` and `correct` modes.
 
 Browser tests need Chromium: `npx playwright install chromium`, or set
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to an existing one. They run on SwiftShader
@@ -274,6 +277,11 @@ path tracing in the mean (see *Accuracy*) and cuts noise per unit of work
 
 ### Weather
 
+The optical snapshot contains liquid-water density only. It extends the field
+one cell beyond the curved wall for filtering, without adding simulated mass.
+
+Simulation speed is an upper bound: actual speed depends on CPU throughput.
+
 `WeatherSolver` is a coarse moist-convection model on a 24 × 24 × 48 grid:
 
 - semi-Lagrangian advection and a pressure projection (incompressible flow),
@@ -346,7 +354,7 @@ profile, the axis is at about 798 hPa.
     3300–4400 cd/m² after two minutes in two runs, against 3495 ± 217 cd/m².
 - The surface light cache against exact camera paths at 1280 × 720: image
   means within 0.3% in daylight, Sun at 85° and Sun at −37°, 59°;
-  per-sample noise lower by 1.4–2.5× at 1.5× the cost. Light bounced twice
+  per-sample noise lower by 1.4–2.5× at about 1.9× the cost (including atlas samples). Light bounced twice
   or more differs locally: in the dimmest scene 6% of 20 × 20-pixel blocks
   differ from exact by more than three standard errors.
 - Pane reflections: next-event estimation agrees with brute-force sampling of

@@ -9,8 +9,8 @@ const populations: [ReturnType<typeof particleOptics>, ReturnType<typeof particl
 const settings = { ...defaults, clouds: true };
 
 function uniformFog(liquid: number) {
-  const data = new Float32Array(24 * 24 * 48 * 4);
-  for (let i = 0; i < data.length; i += 4) data[i] = liquid;
+  const data = new Float32Array(24 * 24 * 48);
+  data.fill(liquid);
   return { data, dimensions: [24, 24, 48] as const };
 }
 const cell = (i: number, j: number, k: number) => (j + CACHE_ANGULAR * (i + CACHE_RADIAL * k)) * 4;
@@ -49,9 +49,9 @@ describe('cloud cache diffusion cells', () => {
     // A trilinear polynomial is reproduced exactly between texel centers.
     const liquid = (x:number,y:number,z:number) => 0.002*(1+0.2*x-0.15*y+0.1*z+0.3*x*y+0.4*y*z+0.2*x*z+0.1*x*y*z);
     for (const dimensions of [[24,24,48],[6,10,12],[24,24,48]] as const) {
-      const [nx,ny,nz] = dimensions, data = new Float32Array(nx*ny*nz*4);
+      const [nx,ny,nz] = dimensions, data = new Float32Array(nx*ny*nz);
       for (let z=0;z<nz;z++) for (let y=0;y<ny;y++) for (let x=0;x<nx;x++) {
-        data[(x+nx*(y+ny*z))*4] = liquid((x+0.5)/nx,(y+0.5)/ny,(z+0.5)/nz);
+        data[x+nx*(y+ny*z)] = liquid((x+0.5)/nx,(y+0.5)/ny,(z+0.5)/nz);
       }
       for (const size of [{radius:4,length:24},{radius:1.7,length:7.3}]) {
         const s = {...settings,...size,aerosol:0};

@@ -10,7 +10,7 @@ export function cloudMajorants(data: Float32Array, dimensions: readonly [number,
       const ix=Math.max(0,Math.min(nx-1,x-1+dx));
       const iy=Math.max(0,Math.min(ny-1,y-1+dy));
       const iz=Math.max(0,Math.min(nz-1,z-1+dz));
-      maximum=Math.max(maximum,data[(ix+nx*(iy+ny*iz))*4]);
+      maximum=Math.max(maximum,data[ix+nx*(iy+ny*iz)]);
     }
     result[x+(nx+1)*(y+(ny+1)*z)]=maximum*extinctionPerDensity*1.00001;
   }

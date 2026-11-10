@@ -327,19 +327,37 @@ export class WeatherSolver {
   }
 
   snapshot() {
-    const data = new Float32Array(this.count * 4);
+    const data = new Float32Array(this.count);
     let mass = 0, cloudy = 0, maxWind = 0, maxTemperatureAnomaly = 0;
     for (const i of this.cells) {
       const t = this.baseT[i] + this.temperature[i];
       const density = this.baseP[i] / (287.05 * t);
-      data[i * 4] = this.cloud[i] * density;
-      data[i * 4 + 1] = this.temperature[i];
-      data[i * 4 + 2] = this.vapor[i];
-      data[i * 4 + 3] = density;
-      mass += data[i * 4] * this.dx * this.dy * this.dz;
-      if (data[i * 4] > 1e-5) cloudy++;
+      data[i] = this.cloud[i] * density;
+      mass += data[i] * this.dx * this.dy * this.dz;
+      if (data[i] > 1e-5) cloudy++;
       maxWind = Math.max(maxWind, Math.hypot(this.u[i], this.v[i], this.w[i]));
       maxTemperatureAnomaly = Math.max(maxTemperatureAnomaly, Math.abs(this.temperature[i]));
+    }
+    // Extend the optical field across the stair-step wall for trilinear
+    // sampling. Only original active neighbours contribute; these ghost
+    // values never enter the solver or its mass/fraction statistics.
+    for (let y = 0; y < this.ny; y++) for (let x = 0; x < this.nx; x++) {
+      const xy = x + this.nx * y;
+      if (this.active[xy]) continue;
+      const neighbours: number[] = [];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || xx >= this.nx || yy < 0 || yy >= this.ny) continue;
+        const j = xx + this.nx * yy;
+        if (this.active[j]) neighbours.push(j);
+      }
+      if (!neighbours.length) continue;
+      for (let z = 0; z < this.nz; z++) {
+        const offset = this.nx * this.ny * z;
+        let sum = 0;
+        for (const j of neighbours) sum += data[j + offset];
+        data[xy + offset] = sum / neighbours.length;
+      }
     }
     const stats: WeatherStats = {
       seconds: this.seconds, maxWind, cloudMass: mass,

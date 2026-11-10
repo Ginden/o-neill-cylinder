@@ -10,8 +10,9 @@ type Terrain = Pick<Settings, 'radius' | 'length' | 'windowFraction' | 'terrainH
  * sides are multiples of 32, so each occupancy mip texel covers exactly the
  * 2^level × 2^level base texels below it. */
 export function atlasSize(radius: number, length: number, limit: number): [number, number] {
-  const height = Math.round(limit * Math.min(1, length / (2 * Math.PI * radius)) / 32) * 32;
-  return [limit, Math.max(256, height)];
+  const circumference = 2 * Math.PI * radius;
+  const aligned = (ratio: number) => Math.max(32, Math.round(limit * ratio / 32) * 32);
+  return [aligned(Math.min(1, circumference / length)), aligned(Math.min(1, length / circumference))];
 }
 /** The terrain and land-cover atlases the GPU bakes for these settings. */
 export const terrainAtlasSize = (s: Pick<Settings, 'radius' | 'length' | 'quality'>) =>

@@ -62,10 +62,5 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          build-args: |
-            OCI_CREATED=${{ steps.version.outputs.created }}
-            OCI_SOURCE=https://gitea.wadas.dev/${{ github.repository }}
-            OCI_REVISION=${{ github.sha }}
-            OCI_VERSION=${{ steps.version.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
