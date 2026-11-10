@@ -54,3 +54,11 @@ the task.
   frozen from another camera position against one rebuilt in place (block
   means over the whole image and over the part showing the clearing).
 - Walking in *Humid afternoon* keeps `cacheIteration` rising.
+
+## Resolution (2026-11-10)
+
+Accepted the camera-only clearing. Cache lighting uses all objects, so it
+survives Ground movement; cached indirect light does not reproduce the small
+observer clearing. Preview frames now continue warming the cloud cache.
+[The task index](README.md#progress-2026-11-10) records the image/field
+comparison, ablation, walking cadence and browser checks.

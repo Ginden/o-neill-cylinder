@@ -217,8 +217,8 @@ therefore use a cache of the light that has already scattered at least once:
   always sampled exactly.
 - **The cache fills itself.** Each iteration traces a path from every cell,
   64 droplet scatterings long, which ends in the previous cache. Repeating
-  this converges to a consistent field. Moving around keeps it unless the
-  Ground observer's clearing changes the scene geometry.
+  this converges to a consistent field. Moving around keeps it; preview
+  frames also advance one cache band, so it warms while you walk.
 - **Optically deep cloud** (where light travels less than about 200 m between
   direction changes, everywhere in a cell's neighborhood) is solved with the
   diffusion equation instead. Light flows between the two regions through
@@ -237,8 +237,10 @@ and makes cloudy scenes about 8× faster per sample.
 
 After a reset (new weather, a changed setting) the cache needs a few hundred
 iterations, 20–40 s on a desktop GPU, to settle; until then clouds look
-blotchy. Walking in Ground view also resets it as the object clearing moves;
-looking around and free flight keep it.
+blotchy. Walking, looking around and free flight keep both lighting caches.
+The observer's clearing affects camera paths, including their shadow rays;
+cache and atlas paths see the full landscape. Cached indirect light therefore
+includes objects hidden by the clearing, a small geometric approximation.
 
 ### Surfaces: the surface light cache
 
@@ -258,8 +260,8 @@ therefore use a cache too:
   themselves, in cosine-distributed directions; these paths do not read the
   atlas, so it has no feedback. After a change it takes an eighth of the
   tracing work until 64 samples, and it also fills while you move; then it
-  refines with a thirty-second. Moving the camera keeps it, except when the
-  Ground clearing resets the cloud lighting it depends on.
+  refines with a thirty-second. Moving the camera keeps it, including Ground
+  walking.
 - **Camera paths** go on from their first surface without roulette. At their
   second surface, sunlight is sampled exactly and the rest comes from the
   atlas. Until the atlas has 64 samples, the image is a running average, so

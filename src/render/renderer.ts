@@ -342,10 +342,7 @@ export class HabitatRenderer {
     const x=walking ? angle*this.settings.radius : 0,y=walking ? p.z : 0,radius=walking ? 0.05 : 0;
     if (clearing.x===x && clearing.y===y && clearing.z===radius) return;
     clearing.set(x,y,radius);this.resetAccumulation();
-    // All rays see the same clearing, including shadows and cloud lighting.
-    // The clear-air surface atlas omits objects already; cloud-lit atlases
-    // must restart when the changed geometry invalidates the cloud cache.
-    if (this.cacheActive) {this.resetCache();this.resetSurface();}
+    // Cache and atlas paths see all objects, so walking only resets the image.
   }
 
   private clearTargets(targets:THREE.WebGLRenderTarget[]) {
@@ -461,9 +458,10 @@ export class HabitatRenderer {
     const bounded=this.liveWeather || (cacheActive && this.cacheIteration<CACHE_WARMUP);
     if(this.mode==='preview') {
       this.preview.render(this.renderer,this.camera,exposure,this.adaptiveExposure);
-      // Navigation right after a change still fills in the scattered light.
-      // The deep-cloud coefficients are a CPU pass, left to static refinement.
-      if (natural && this.surfaceSample<SURFACE_FILL && !(cacheActive && this.diffusionDirty)) this.advanceSurface(cacheActive,bounded);
+      // Weather coefficients are already prepared off-thread. One cache band
+      // per preview keeps warming during a walk without a camera dependency.
+      if (cacheActive) {if (this.diffusionDirty) this.updateDiffusion();this.advanceCache();}
+      if (natural && this.surfaceSample<SURFACE_FILL) this.advanceSurface(cacheActive,bounded);
       this.frameFence=gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE,0);gl.flush();
       return true;
     }

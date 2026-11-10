@@ -115,3 +115,58 @@ test('ground-view clearing follows the camera and is disabled in free flight',as
   expect(result.values[2]).toBeGreaterThan(0);
   expect(result.values[3]).toBeCloseTo(result.initial,6);
 });
+
+test('camera rays clear objects while both cache path starters retain them', async ({ page }) => {
+  await openIsolatedPage(page);
+  const pixels=await page.evaluate(async()=>{
+    const rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts',threeModule='/node_modules/three/build/three.module.js';
+    const {HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule),THREE=await import(threeModule);
+    const habitat=new HabitatRenderer(document.createElement('canvas'),{...defaults,paused:true});
+    habitat.material.uniforms.uObjectClearing.value.set(Math.PI*defaults.radius,0,0.05);
+    const source=habitat.material.fragmentShader;
+    const material=new THREE.ShaderMaterial({glslVersion:THREE.GLSL3,uniforms:habitat.material.uniforms,
+      vertexShader:'void main(){gl_Position=vec4(position.xy,0,1);}',fragmentShader:source.slice(0,source.indexOf('void main() {'))+`
+        void main(){
+          int mode=int(gl_FragCoord.x);vec3 origin,direction;float density;int hero;bool air;
+          if(mode==1) startCachePath(origin,direction,density,hero,air);
+          if(mode==2) startSurfacePath(origin,direction);
+          bool cleared=clearedObject(vec2(PI*uRadius,0),0.004,0.12);
+          outColor=vec4(cameraClearing ? 1.0 : 0.0,cleared ? 1.0 : 0.0,0,1);
+        }`});
+    const plane=new THREE.PlaneGeometry(2,2),scene=new THREE.Scene();scene.add(new THREE.Mesh(plane,material));
+    const target=new THREE.WebGLRenderTarget(3,1,{type:THREE.FloatType,depthBuffer:false});
+    habitat.renderer.setRenderTarget(target);habitat.renderer.render(scene,new THREE.Camera());
+    const pixels=new Float32Array(12);habitat.renderer.readRenderTargetPixels(target,0,0,3,1,pixels);
+    material.dispose();plane.dispose();target.dispose();habitat.dispose();return Array.from(pixels);
+  });
+  expect(pixels).toEqual([1,1,0,1,0,0,0,1,0,0,0,1]);
+});
+
+test('walking in cloudy Ground view preserves and advances both lighting caches', async ({ page }) => {
+  await openIsolatedPage(page);
+  const result=await page.evaluate(async()=>{
+    const rendererModule='/src/render/renderer.ts',settingsModule='/src/settings.ts',weatherModule='/src/weather/solver.ts',transportModule='/src/weather/transport.ts';
+    const {HabitatRenderer}=await import(rendererModule),{defaults}=await import(settingsModule),{WeatherSolver}=await import(weatherModule),{prepareWeather}=await import(transportModule);
+    const settings={...defaults,clouds:true,humidity:78,paused:true,view:'ground',quality:'fast'};
+    const habitat=new HabitatRenderer(document.createElement('canvas'),settings);habitat.resize(16,16,'fast',1);
+    habitat.setWeather(prepareWeather({...new WeatherSolver(settings).snapshot(),revision:1},settings,habitat.transportOptics));
+    // Cheap constant radiance leaves the real scheduling, cache updates and
+    // observer changes intact, without tracing millions of CI cloud paths.
+    const signature='vec4 pathRadiance(vec3 p,vec3 direction,int dropletLimit,bool excludeDirect,bool surfaceCache,out vec4 hazeRadiance) {';
+    habitat.material.fragmentShader=habitat.material.fragmentShader.replace(signature,`${signature}hazeRadiance=vec4(0.0);return vec4(0.01);}\n${signature.replace('pathRadiance(','unusedRadiance(')}`);
+    habitat.material.needsUpdate=true;
+    const frame=()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+    const iterations:number[]=[],surfaceSamples:number[]=[];
+    for(let step=0;step<24;step++) {
+      habitat.camera.position.set(0,-3.8,step*0.001);
+      while(!habitat.render(true)) await frame();
+      iterations.push(habitat.cacheIteration);surfaceSamples.push(habitat.surfaceSample);await frame();
+    }
+    const error=habitat.renderer.getContext().getError();habitat.dispose();return {iterations,surfaceSamples,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.iterations.at(-1)).toBeGreaterThanOrEqual(3);
+  expect(result.surfaceSamples.at(-1)).toBeGreaterThanOrEqual(3);
+  for(let i=1;i<result.iterations.length;i++) expect(result.iterations[i]).toBeGreaterThanOrEqual(result.iterations[i-1]);
+  for(let i=1;i<result.surfaceSamples.length;i++) expect(result.surfaceSamples[i]).toBeGreaterThanOrEqual(result.surfaceSamples[i-1]);
+});

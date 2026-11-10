@@ -76,6 +76,23 @@ proposed fix and how to check it.
   Coefficient work is moved, not removed: the CPU benchmark reports
   10.5–13.9 ms for its refresh.
 
+- **perf-09 complete:** the 50 m clearing applies to camera paths and their
+  shadows; cache/atlas paths retain the full landscape. Ground movement resets
+  accumulation only. Preview frames advance a cloud-cache band as well as a
+  surface band, using the coefficients already prepared off-thread. All four
+  clearing browser tests pass; 24 moving frames advance both caches through
+  three iterations without a reset. On the RTX 5070, 48 real humid-walking
+  frames advance six iterations with a median 16.6 ms frame gap (57.7 fps
+  including an initial 42.9 ms gap; compile/band latency work remains in
+  perf-03/perf-04). A 23.9 kt uniform fog experiment at 1280 × 720 compares
+  caches built 1 km apart: after eight cache iterations, every fluence/flux
+  value is bit-identical. At 16 camera samples with the surface cache off,
+  all 32 block means match exactly, including the clearing foreground;
+  whole-image mean Y is 0.01066878 and foreground mean is 0.00202900.
+  Re-enabling the old cache clearing changes seven field values (max
+  1.54e-9), confirming that the fixture exercises affected objects. The
+  cached-light geometric approximation is documented in the README.
+
 All other tasks remain open. Current GPU baselines still show the cloudy
 cache taking about 235 ms per camera sample and clear-scene GPU utilization
 of 85%; these are not fixed by the completed work.

@@ -124,10 +124,12 @@ float anchorHeight(vec2 g) {
   return uCachedTerrain ? textureLod(uAnchorTerrain, groundAtlas(g), 0.0).r : groundHeight(g);
 }
 
+// Cached lighting sees the full landscape, independently of the observer.
+bool cameraClearing=true;
 // Remove whole objects whose footprint overlaps the observer's clearing.
 // Wrap the arc distance so the clearing also works across the atlas seam.
 bool clearedObject(vec2 center, float extent, float top) {
-  if (uObjectClearing.z <= 0.0) return false;
+  if (!cameraClearing || uObjectClearing.z <= 0.0) return false;
   vec2 offset = center - uObjectClearing.xy;
   offset.x = mod(offset.x + PI * uRadius, 2.0 * PI * uRadius) - PI * uRadius;
   return length(offset) < uObjectClearing.z + extent * uRadius / (uRadius - top);

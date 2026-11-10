@@ -48,6 +48,7 @@ void startSample(uint seed,int index) {
 // whose shortened paths reproduce it. The blend averages iterations.
 // Returns false when the cell is finished without a path (deep cells).
 bool startCachePath(out vec3 origin,out vec3 direction,out float density,out int hero,out bool air) {
+  cameraClearing=false;
   ivec2 texel=ivec2(gl_FragCoord.xy);
   int radial=texel.y%CACHE_RADIAL,axial=texel.y/CACHE_RADIAL;
   rngState=uint(texel.x+texel.y*CACHE_ANGULAR)*9781u+uint(uCacheIteration)*6271u+0x2545f491u;
@@ -122,6 +123,7 @@ void finishCachePath(vec4 radiance,vec3 direction,float density,int hero,bool ai
 // texel, in a cosine-distributed direction, estimates the irradiance there.
 // Returns false outside the endcap discs.
 bool startSurfacePath(out vec3 origin,out vec3 direction) {
+  cameraClearing=false;
   uvec2 texel=uvec2(gl_FragCoord.xy);
   vec2 size=vec2(textureSize(uPreviousSurface,0));
   startSample((texel.x+texel.y*uint(size.x))*9781u+0x1b873593u,uSurfaceSample);
