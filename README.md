@@ -13,14 +13,15 @@ Source: [github.com/Ginden/o-neill-cylinder](https://github.com/Ginden/o-neill-c
 ## Quick start
 
 Needs Node.js 26+ and a browser with WebGL 2 and float render targets
-(`EXT_color_buffer_float`); any recent desktop Chrome or Firefox does.
+(`EXT_color_buffer_float`) and linear float-texture filtering
+(`OES_texture_float_linear`); any recent desktop Chrome or Firefox does.
 
 ```sh
 npm ci
 npm run dev        # then open http://127.0.0.1:5173/
 ```
 
-The first load compiles a large shader: expect about 27 s on an RTX 5070 with a cold driver
+The first load compiles a large shader: expect about 37 s on an RTX 5070 with a cold driver
 cache. Software rendering works but is slow.
 
 ## Using the lab

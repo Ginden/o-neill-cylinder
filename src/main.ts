@@ -231,7 +231,7 @@ function showRendererError(error: unknown) {
   element<HTMLButtonElement>('snapshot').disabled = true;
   const message = document.createElement('div');
   message.className = 'error-message';
-  message.textContent = `The 3D renderer could not start. This experiment needs a browser with WebGL 2 enabled. ${error instanceof Error ? error.message : ''}`;
+  message.textContent = `The 3D renderer is unavailable. This experiment needs a browser with WebGL 2 enabled. ${error instanceof Error ? error.message : ''}`;
   element('scene').parentElement!.append(message);
   // Model notes remain available even when graphics initialization fails.
   element('model-details').addEventListener('click', () => element<HTMLDialogElement>('model-dialog').showModal());

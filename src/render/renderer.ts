@@ -129,6 +129,7 @@ export class HabitatRenderer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     if (!this.renderer.extensions.has('EXT_color_buffer_float')) throw new Error('Floating-point render targets are required for physical light accumulation.');
+    if (!this.renderer.extensions.has('OES_texture_float_linear')) throw new Error('Linear filtering of floating-point textures is required for physical light transport.');
     this.weather = new THREE.Data3DTexture(new Float32Array(1), 1, 1, 1);
     this.weather.format=THREE.RedFormat;
     this.configureTexture(this.weather);
@@ -206,6 +207,8 @@ export class HabitatRenderer {
 
   setWeather(snapshot: WeatherSnapshot) {
     this.cloudMass=snapshot.stats.cloudMass;
+    this.material.uniforms.uClouds.value=this.settings.clouds && this.cloudMass>0;
+    this.updateBands(this.targets[0].width,this.targets[0].height);
     const [x,y,z] = snapshot.dimensions;
     if (this.weather.image.width !== x) {
       this.weather.dispose();
@@ -223,7 +226,7 @@ export class HabitatRenderer {
     this.guidesDirty=true;
     // Live snapshots of the same run keep the cache as a warm start.
     if (snapshot.revision!==this.weatherRevision) this.resetCache();
-    if (this.material.uniforms.uClouds.value && snapshot.revision!==this.weatherRevision) {this.resetAccumulation();this.resetSurface();}
+    if (this.settings.clouds && snapshot.revision!==this.weatherRevision) {this.resetAccumulation();this.resetSurface();}
     this.weatherRevision=snapshot.revision;
   }
 
@@ -270,6 +273,7 @@ export class HabitatRenderer {
       uAtmosphere: s.atmosphere, uClouds: s.clouds
     };
     for (const [name, value] of Object.entries(scalar)) u[name].value = value;
+    u.uClouds.value=s.clouds && this.cloudMass>0;
     this.updateBands(this.targets[0].width,this.targets[0].height);
     u.uSun.value.set(...sunDirection(s));
     const panels=mirrorGeometry(s);

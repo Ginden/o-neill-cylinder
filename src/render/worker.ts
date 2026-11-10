@@ -26,11 +26,14 @@ let sampleRate = 0;
 let frameHandle = 0;
 let refinementHandle: ReturnType<typeof setTimeout>;
 let visible = true;
+let failed = false;
 
 function stopFrames() { cancelAnimationFrame(frameHandle); clearTimeout(refinementHandle); }
 
 function post(message: RenderResponse) { self.postMessage(message); }
 function fail(error: unknown) {
+  if (failed) return;
+  failed = true;
   stopFrames();
   particles.dispose();
   weather?.dispose();
@@ -39,7 +42,7 @@ function fail(error: unknown) {
 const particles = new ParticlePool(undefined, event => fail(new Error(event.message)));
 
 function applyState() {
-  if (!populations) return;
+  if (failed || !populations) return;
   const nextState = JSON.stringify(state.settings);
   if (!renderer) {
     renderer = new HabitatRenderer(canvas, state.settings, populations);
@@ -72,6 +75,7 @@ function updateState(next: RenderState) {
 }
 
 function frame(now: number) {
+  if (failed) return;
   try {
     weather.update((now - previous) / 1000, state.settings);
     previous = now;
@@ -114,9 +118,11 @@ function frame(now: number) {
 }
 
 self.onmessage = ({ data }: MessageEvent<RenderRequest>) => {
+  if (failed) return;
   try {
     if (data.type === 'init') {
       canvas = data.canvas;
+      canvas.addEventListener('webglcontextlost', () => fail(new Error('The WebGL context was lost. Reload the page to restart the renderer.')), { once: true });
       weather = new WeatherClient(data.state.settings, snapshot => {
         latestWeather = snapshot;
         weatherDirty = true;

@@ -419,7 +419,7 @@ PathState startPath(vec3 p,vec3 direction) {
   // Every camera ray estimates single scattering by air with one forced
   // collision on its segment; analog air collisions there omit that term
   // (no next-event estimate, no direct solar hit) to avoid counting it twice.
-  s.forced=uAtmosphere && uPressure>0.0 && uAirMajorant>0.0;s.singleAir=false;s.cameraSegment=true;
+  s.forced=uSolarPower>0.0 && uAtmosphere && uPressure>0.0 && uAirMajorant>0.0;s.singleAir=false;s.cameraSegment=true;
   s.done=false;s.surfaceCache=false;
   s.mirrorBounces=0;s.order=0;s.droplets=0;s.events=0;s.surfaces=0;
   return s;
@@ -451,7 +451,7 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
         if (t<closest) {closest=t;panel=i;}
       }
       if (closest>1e19) {
-        if (dot(s.direction,uSun)>=cos(SOLAR_RADIUS)) {
+        if (uSolarPower>0.0 && dot(s.direction,uSun)>=cos(SOLAR_RADIUS)) {
           // Next-event estimation chose among the routes open at the last
           // vertex: directly, by a mirror, or with a pane reflection on the way.
           bool sampled=(s.neeReachable || s.paneRatio>0.0) && s.mirrorBounces<=1;
@@ -616,7 +616,7 @@ void advancePath(inout PathState s,int limit,int maxEvents,int dropletLimit,bool
         }
       }
     }
-    if (connect) {
+    if (connect && uSolarPower>0.0) {
       vec4 light=connectWeight*directLight(connectPoint,connectNormal,connectOutgoing,connectSpecies,connectAlbedo,weighted,connectDensity);
       if (forcedEstimate) s.scattered+=light;
       else s.radiance+=light;

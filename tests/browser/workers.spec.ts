@@ -133,13 +133,15 @@ test('live cloud updates retain spectral history and pausing converges the froze
     new Navigation(renderer.camera, canvas, settings);
     renderer.resize(32, 32, 'fast', 1);
     // Accumulation is tested with exact camera paths: reporting no cloud mass
-    // keeps the scattered-light cache off, and camera paths do not read the
+    // keeps the scattered-light cache off; explicitly re-enable cloud tracking
+    // after each update for this controlled exact-path experiment. Camera paths do not read the
     // surface light atlas. Either cache's evolving state would make samples
     // differ between the static and live runs. Droplets stay in the field.
     renderer.material.uniforms.uSurfaceCache.value = false;
     const solved = new WeatherSolver(settings).snapshot();
     const snapshot = { ...solved, stats: { ...solved.stats, cloudMass: 0 }, revision: 1 };
     renderer.setWeather(snapshot);
+    renderer.material.uniforms.uClouds.value = true;
     const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const sample = async () => {
       while (true) {
@@ -157,11 +159,13 @@ test('live cloud updates retain spectral history and pausing converges the froze
     const means: Float32Array[] = [];
     for (let n = 0; n < 68; n++) means.push(await sample());
     renderer.apply({ ...settings, paused: false });
+    renderer.material.uniforms.uClouds.value = true;
     renderer.resize(32, 32, 'fast', 1);
     const expected = new Float64Array(means[0].length);
     let difference = 0, scale = 0;
     for (let n = 0; n < 64; n++) {
       renderer.setWeather(snapshot);
+      renderer.material.uniforms.uClouds.value = true;
       const actual = await sample();
       for (let i = 0; i < actual.length; i++) {
         const independent = (n + 1) * means[n][i] - n * (means[n - 1]?.[i] ?? 0);
@@ -172,8 +176,10 @@ test('live cloud updates retain spectral history and pausing converges the froze
     }
     const liveSamples = renderer.samples;
     renderer.apply(settings);
+    renderer.material.uniforms.uClouds.value = true;
     // A last in-flight weather snapshot may arrive after the pause command.
     renderer.setWeather(snapshot);
+    renderer.material.uniforms.uClouds.value = true;
     const samplesAtPause = renderer.samples;
     let paused = new Float32Array(0);
     for (let n = 64; n < 68; n++) {
@@ -187,6 +193,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     for (let i = 0; i < paused.length; i++) pausedDifference = Math.max(pausedDifference, Math.abs(paused[i] - expected[i]));
     const pausedSamples = renderer.samples;
     renderer.apply({ ...settings, paused: false });
+    renderer.material.uniforms.uClouds.value = true;
     renderer.setWeather({ ...snapshot, revision: 2 });
     const resetSamples = renderer.samples;
     const error = renderer.renderer.getContext().getError();

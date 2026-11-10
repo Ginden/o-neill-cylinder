@@ -4,6 +4,40 @@ Findings from a profiling and code-reading pass on 2026-11-10, at commit
 `d4b171c`. Each file is one task with its evidence, the code it concerns, a
 proposed fix and how to check it.
 
+## Progress (2026-11-10)
+
+- **00 implemented:** `scripts/profile-gpu.mjs` tracks all four modes, accepts
+  the benchmark environment, and checks private fields. Lint, `compile` and
+  `perf` passed on the RTX 5070; `extra` and `correct` still need a run.
+- **fix-02 complete:** snapshots extend liquid-water density into adjacent
+  inactive cells. The regression samples uniform fog 10 m inside the wall at
+  every degree around the cylinder and checks unchanged mass. Unit tests and
+  all 11 cloud/geometry/worker browser tests passed.
+- **fix-04 complete:** build base paths (including both favicons), unused image
+  build arguments, first-sample exposure, atlas aspect ratios, single-channel
+  weather transfers, and documentation corrected. `npm run check` passes
+  (49 tests); a `/lab/` production build was inspected. Browser regressions
+  cover weather uploads, geometry and live history.
+- **fix-03 complete:** the worker stops and reports context loss; startup
+  requires linear float filtering. Bundled Chromium tests reproduce a lost
+  worker context and an absent filtering extension.
+- **perf-05 complete:** shader tracking and band sizes follow actual
+  condensate. Tests cover first condensation, evaporation, settings updates
+  and checkbox toggles; the live-history/restart regression passes. GPU
+  profiler: clear 84.48 ms camera / 4 bands, empty-cloud 84.38 ms / 4 bands.
+- **perf-06 complete:** zero solar power skips forced air estimates, solar
+  connections and Sun-hit MIS. All four transport browser tests pass. At
+  1280 × 720, 64 exact samples per variant (no clouds or surface cache),
+  disabling the new gates restores the original estimator: 62.95 ms camera
+  before, 41.02 ms after. Across 32 blocks, the largest mean difference is
+  1.76 combined standard errors; image means are 3.5132e-8 and 3.5028e-8.
+  With the surface atlas enabled, the standard profiler measures 60.60 ms
+  at night against 84.48 ms in daylight.
+
+All other tasks remain open. Current GPU baselines still show the cloudy
+cache taking about 235 ms per camera sample and clear-scene GPU utilization
+of 85%; these are not fixed by the completed work.
+
 ## How the numbers were measured
 
 - GPU: RTX 5070 through ANGLE/OpenGL in headless Chromium, 940 × 800 traced
@@ -14,10 +48,10 @@ proposed fix and how to check it.
   display). "GPU busy" is the sum of those times over wall time.
 - Cold shader compile times force a new program by changing one constant in
   the source, then block on `LINK_STATUS`.
-- The scripts are untracked, in `.local/`: `bottleneck-profile.mjs`
-  (`compile`, `perf`, `extra`, `correct` modes; needs `npm run dev`),
-  `bottleneck-cpu.mjs <repo path>` and `bottleneck-wall-fade.mjs`. Task 00
-  moves the first into `scripts/`.
+- The GPU profiler is tracked as `scripts/profile-gpu.mjs` (`compile`,
+  `perf`, `extra`, `correct`; needs `npm run dev`). Additional original
+  probes remain in `.local/`: `bottleneck-cpu.mjs <repo path>` and
+  `bottleneck-wall-fade.mjs`.
 
 ## Tasks, by expected effect
 
