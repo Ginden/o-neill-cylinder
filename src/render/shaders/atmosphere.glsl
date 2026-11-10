@@ -126,7 +126,23 @@ bool startSurfacePath(out vec3 origin,out vec3 direction) {
   vec2 size=vec2(textureSize(uPreviousSurface,0));
   startSample((texel.x+texel.y*uint(size.x))*9781u+0x1b873593u,uSurfaceSample);
   vec3 p;
-  if (!surfaceAtlasPoint((vec2(texel)+vec2(randomValue(),randomValue()))/size,p)) return false;
+  vec2 fallback=(vec2(texel)+0.5)/size;
+  if (fallback.y>=ATLAS_WALL) {
+    vec2 region=vec2(0.5,1.0-ATLAS_WALL);
+    vec2 low=vec2(fallback.x<0.5 ? 0.0 : 0.5,ATLAS_WALL);
+    vec2 center=(fallback-low)/region*2.0-1.0;
+    vec2 halfTexel=1.0/(size*region);
+    vec2 nearest=clamp(vec2(0.0),center-halfTexel,center+halfTexel);
+    // No part of this texel belongs to the endcap.
+    if (dot(nearest,nearest)>=1.0) return false;
+    fallback=low+(nearest*0.5+0.5)*region;
+  }
+  // Rejection samples the actual part of a rim texel. A bounded fallback to
+  // its nearest in-disc point also initializes tiny slivers on the first pass.
+  for (int attempt=0;attempt<16;attempt++) {
+    vec2 uv=attempt==15 ? fallback : (vec2(texel)+vec2(randomValue(),randomValue()))/size;
+    if (surfaceAtlasPoint(uv,p)) break;
+  }
   landObjects=false;pathLandObjects=false;
   vec3 normal=interiorNormal(p);
   origin=p+normal*(EPS*4.0);

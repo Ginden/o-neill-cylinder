@@ -228,3 +228,78 @@ test('stands the ground view on the surface the GPU draws',async({page})=>{
   // Kilometres: a few centimetres against a 1.7 m eye height.
   expect(result.maximum).toBeLessThan(5e-5);
 });
+
+test('preserves partial endcap texels and filters inside each atlas disc', async ({ page }) => {
+  await openIsolatedPage(page);
+  const result = await page.evaluate(async () => {
+    const rendererModule = '/src/render/renderer.ts', settingsModule = '/src/settings.ts', threeModule = '/node_modules/three/build/three.module.js';
+    const { HabitatRenderer } = await import(rendererModule), { defaults } = await import(settingsModule), THREE = await import(threeModule);
+    const habitat = new HabitatRenderer(document.createElement('canvas'), { ...defaults, paused: true });
+    // Constant incident irradiance isolates the atlas estimator from varying
+    // illumination: every nonempty texel must retain exactly the same mean.
+    let source = habitat.material.fragmentShader;
+    const signature = 'vec4 pathRadiance(vec3 p,vec3 direction,int dropletLimit,bool excludeDirect,bool surfaceCache,out vec4 hazeRadiance) {';
+    source = source.replace(signature, `${signature} hazeRadiance=vec4(0.0);return vec4(1.0);}\n${signature.replace('pathRadiance(', 'unusedRadiance(')}`);
+    const begin = source.indexOf('  vec3 bands=vec3(spectralXYZ'), end = source.indexOf('\n  if (any(isnan(bands))', begin);
+    if (begin < 0 || end < 0) throw new Error('Missing surface irradiance estimator');
+    source = source.slice(0, begin) + '  vec3 bands=vec3(1.0);' + source.slice(end);
+    habitat.material.fragmentShader = source; habitat.material.needsUpdate = true;
+    const tick = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    for (let sample = 0; sample < 32; sample++) {
+      for (let band = 0; band < 8; band++) { habitat.advanceSurface(false, false); await tick(); }
+    }
+    const atlas = habitat.surfaceTargets[habitat.surfaceIndex], pixels = new Float32Array(128 * 192 * 4);
+    habitat.renderer.readRenderTargetPixels(atlas, 0, 0, 128, 192, pixels);
+    let minimum = Infinity, outsideMaximum = 0, partial = 0;
+    for (let cap=0;cap<2;cap++) for (let y=0;y<64;y++) for (let x=0;x<64;x++) {
+      const nearestX = Math.max(0, Math.abs((x+0.5)/32-1)-1/64), nearestY = Math.max(0, Math.abs((y+0.5)/32-1)-1/64);
+      const value = pixels[((128+y)*128+cap*64+x)*4];
+      if (Math.hypot(nearestX, nearestY) < 1) {
+        minimum = Math.min(minimum, value);
+        if (Math.hypot((x+0.5)/32-1, (y+0.5)/32-1) > 0.97) partial++;
+      } else outsideMaximum = Math.max(outsideMaximum, value);
+    }
+    // Test every rim angle and all nine preview tent offsets. The direct bake
+    // uses the same lookup function at a different size, checked as well.
+    const lookup = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, uniforms: { ...habitat.material.uniforms, uTestAtlas: { value: atlas.textures[0] } },
+      vertexShader: 'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
+      fragmentShader: source.slice(0, source.indexOf('void main() {')) + `
+        uniform sampler2D uTestAtlas;
+        void main(){
+          float angle=(gl_FragCoord.x-0.5)/360.0*2.0*PI;
+          int row=int(gl_FragCoord.y),cap=row/9,offset=row%9;
+          vec3 p=vec3(uRadius*vec2(cos(angle),sin(angle)),cap==0 ? -uLength*0.5 : uLength*0.5);
+          outColor=vec4(surfaceAtlasLight(uTestAtlas,surfaceAtlasCoordinates(p,true),true,vec2(offset%3-1,offset/3-1)),1.0);
+        }` });
+    const scene = new THREE.Scene(), plane = new THREE.PlaneGeometry(2,2); scene.add(new THREE.Mesh(plane, lookup));
+    const target = new THREE.WebGLRenderTarget(360,18,{type:THREE.FloatType,depthBuffer:false});
+    habitat.renderer.setRenderTarget(target); habitat.renderer.render(scene,new THREE.Camera());
+    const filtered = new Float32Array(360*18*4); habitat.renderer.readRenderTargetPixels(target,0,0,360,18,filtered);
+    let filteredMinimum=Infinity;
+    for(let i=0;i<filtered.length;i+=4) filteredMinimum=Math.min(filteredMinimum,filtered[i]);
+    const baked = new Float32Array(512*768*4);
+    for(let y=0;y<256;y++) for(let x=0;x<256;x++) if(Math.hypot((x+0.5)/128-1,(y+0.5)/128-1)<1) {
+      for(let cap=0;cap<2;cap++) for(let c=0;c<3;c++) baked[((512+y)*512+cap*256+x)*4+c]=cap+1;
+    }
+    const direct = new THREE.DataTexture(baked,512,768,THREE.RGBAFormat,THREE.FloatType);
+    direct.minFilter=direct.magFilter=THREE.LinearFilter;direct.needsUpdate=true;
+    lookup.uniforms.uTestAtlas.value=direct;
+    habitat.renderer.render(scene,new THREE.Camera());
+    habitat.renderer.readRenderTargetPixels(target,0,0,360,18,filtered);
+    let directMinimum=Infinity,directMaximum=0;
+    for(let i=0;i<filtered.length;i+=4) {
+      const relative=filtered[i]/(Math.floor(i/(360*4*9))+1);
+      directMinimum=Math.min(directMinimum,relative);directMaximum=Math.max(directMaximum,relative);
+    }
+    const error=habitat.renderer.getContext().getError();
+    direct.dispose();lookup.dispose();plane.dispose();target.dispose();habitat.dispose();
+    return {minimum,outsideMaximum,partial,filteredMinimum,directMinimum,directMaximum,error};
+  });
+  expect(result.error).toBe(0);
+  expect(result.partial).toBeGreaterThan(200);
+  expect(result.minimum).toBeCloseTo(1,5);
+  expect(result.outsideMaximum).toBe(0);
+  expect(result.filteredMinimum).toBeCloseTo(1,5);
+  expect(result.directMinimum).toBeCloseTo(1,5);
+  expect(result.directMaximum).toBeCloseTo(1,5);
+});

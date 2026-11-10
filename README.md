@@ -243,6 +243,8 @@ therefore use a cache too:
   about 200 m. It holds the irradiance of light that has scattered or
   reflected at least once, per reflectance band (680, 550 and 440 nm,
   luminance-weighted), relative to sunlight. Direct sunlight is never cached.
+  Endcap rim texels sample their in-disc area, and filtered reads stay inside
+  each disc in both the scattered-light atlas and the direct-sun bake.
 - **The path tracer fills it** with paths that start on the surfaces
   themselves, in cosine-distributed directions; these paths do not read the
   atlas, so it has no feedback. After a change it takes an eighth of the

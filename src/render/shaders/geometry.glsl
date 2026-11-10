@@ -152,7 +152,8 @@ float exteriorPath(inout vec3 p, inout vec3 d) {
 const float ATLAS_WALL=2.0/3.0;
 vec2 surfaceAtlasCoordinates(vec3 p,bool endcap) {
   if (endcap) {
-    vec2 square=clamp(p.xy/(2.0*uRadius)+0.5,0.0,1.0);
+    // Keep the cap identity at the exact seam between the two squares.
+    vec2 square=clamp(p.xy/(2.0*uRadius)+0.5,1e-6,1.0-1e-6);
     return vec2((square.x+(p.z>0.0 ? 1.0 : 0.0))*0.5,ATLAS_WALL+square.y*(1.0-ATLAS_WALL));
   }
   vec2 uv=atlasCoordinates(p);
@@ -164,7 +165,18 @@ vec3 surfaceAtlasLight(sampler2D atlas,vec2 uv,bool endcap,vec2 offset) {
   vec2 size=vec2(textureSize(atlas,0)),margin=0.5/size;
   vec2 low=endcap ? vec2(uv.x<0.5 ? 0.0 : 0.5,ATLAS_WALL) : vec2(-1e3,0.0);
   vec2 high=endcap ? low+vec2(0.5,1.0-ATLAS_WALL) : vec2(1e3,ATLAS_WALL);
-  return textureLod(atlas,clamp(uv+offset/size,low+margin,high-margin),0.0).rgb;
+  vec2 lookup=uv+offset/size;
+  if (endcap) {
+    vec2 region=high-low;
+    vec2 disc=(lookup-low)/region*2.0-1.0;
+    // Every bilinear corner must stay inside the disc, including diagonal
+    // corners. This applies to both the scattered atlas and direct-sun bake.
+    // A contributing centre can be almost a full texel from the lookup.
+    float radius=1.0-length(2.0/(size*region));
+    disc*=min(1.0,radius/max(length(disc),1e-8));
+    lookup=low+(disc*0.5+0.5)*region;
+  }
+  return textureLod(atlas,clamp(lookup,low+margin,high-margin),0.0).rgb;
 }
 // The surface point at atlas coordinates `uv`: on the terrain, on a pane or
 // frame, or on an endcap. False outside the endcap discs.

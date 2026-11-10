@@ -319,7 +319,12 @@ try {
         }
         const coverage = inside / 64, rho = Math.hypot(((tx + 0.5) / 64 - 0.5) * 2, ((ty + 0.5) / 64 - 0.5) * 2);
         const value = atlas[((128 + ty) * 128 + cap * 64 + tx) * 4 + 1];
-        const name = coverage === 0 ? 'outside' : coverage === 1 ? (rho > 0.85 ? 'inside, outer ring (0.85–1 R)' : rho > 0.6 ? 'inside, 0.6–0.85 R' : 'inside, core')
+        // Exact disc/texel bounds: an 8×8 coverage probe can miss a tiny
+        // valid sliver or miss a tiny outside corner.
+        const cx = ((tx + 0.5) / 64 - 0.5) * 2, cy = ((ty + 0.5) / 64 - 0.5) * 2;
+        const empty = Math.hypot(Math.max(0, Math.abs(cx) - 1 / 64), Math.max(0, Math.abs(cy) - 1 / 64)) >= 1;
+        const full = Math.hypot(Math.abs(cx) + 1 / 64, Math.abs(cy) + 1 / 64) <= 1;
+        const name = empty ? 'outside' : full ? (rho > 0.85 ? 'inside, outer ring (0.85–1 R)' : rho > 0.6 ? 'inside, 0.6–0.85 R' : 'inside, core')
           : `rim, ${coverage <= 0.25 ? '0–25' : coverage <= 0.5 ? '25–50' : coverage <= 0.75 ? '50–75' : '75–100'}% in the disc`;
         add(`cap ${cap}: ${name}`, value);
       }

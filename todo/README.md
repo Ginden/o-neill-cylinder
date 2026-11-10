@@ -6,9 +6,21 @@ proposed fix and how to check it.
 
 ## Progress (2026-11-10)
 
-- **00 implemented:** `scripts/profile-gpu.mjs` tracks all four modes, accepts
-  the benchmark environment, and checks private fields. Lint, `compile` and
-  `perf` passed on the RTX 5070; `extra` and `correct` still need a run.
+- **00 complete:** `scripts/profile-gpu.mjs` tracks all four modes, accepts
+  the benchmark environment, and checks private fields. Lint and all four
+  modes passed on the RTX 5070. The correctness buckets now use exact
+  disc/texel bounds, including slivers missed by the coverage probe.
+- **fix-01 complete:** partial endcap texels sample only valid surface points;
+  bilinear reads stay within the disc for both surface and direct-sun atlases.
+  The browser regression checks every nonempty texel under constant irradiance,
+  all 360 rim angles, nine tent offsets, both atlas sizes, and distinct cap
+  lighting. All valid texels retain irradiance 1; filtered reads retain 1 with
+  no cap mixing. Full transport at 128 atlas samples gives rim group means
+  0.025–0.043 (previously 0.00001–0.0032), with entirely outside texels zero.
+  Actual wall-adjacent lighting is lower than the wide 0.85–1 R ring (0.063),
+  so the constant-irradiance test isolates the erased-mean regression from
+  spatial lighting variation. The unsampled-Sun-route probe still changes no
+  texels. `npm run check` and the rim browser test pass.
 - **fix-02 complete:** snapshots extend liquid-water density into adjacent
   inactive cells. The regression samples uniform fog 10 m inside the wall at
   every degree around the cylinder and checks unchanged mass. Unit tests and
