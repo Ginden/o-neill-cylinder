@@ -43,7 +43,7 @@ export const sliders: Record<string, SliderSpec[]> = {
     { key: 'surfaceHeating', clouds: true, label: 'Surface-layer heating', min: 0, max: 0.05, step: 0.001, unit: 'K/min', scale: 60 },
     { key: 'evaporation', clouds: true, label: 'Surface vapor source', min: 0, max: 0.00003, step: 0.000001, unit: 'g/kg/min', scale: 60000 },
     { key: 'wind', clouds: true, label: 'Initial axial breeze', min: 0, max: 20, step: 0.5, unit: 'm/s' },
-    { key: 'timeScale', clouds: true, label: 'Simulation speed', min: 1, max: 600, step: 1, unit: '×' },
+    { key: 'timeScale', clouds: true, label: 'Simulation speed', min: 1, max: 600, step: 1, unit: '×', hint: 'Requested maximum. Actual speed depends on CPU throughput and appears below when it falls short.' },
     { key: 'seed', clouds: true, label: 'Weather seed', min: 1, max: 999, step: 1, unit: '' }
   ],
   display: [
@@ -61,7 +61,7 @@ export function formatValue(spec: SliderSpec, value: number) {
 function slider(spec: SliderSpec, settings: Settings) {
   return `<div class="control"${spec.clouds ? ' data-clouds' : ''}><label for="${spec.key}">${spec.label}<output id="${spec.key}-value">${formatValue(spec, settings[spec.key])}</output></label>
     <input type="range" id="${spec.key}" min="${spec.logarithmic ? Math.log2(spec.min) : spec.min}" max="${spec.logarithmic ? Math.log2(spec.max) : spec.max}" step="${spec.step}" value="${spec.logarithmic ? Math.log2(settings[spec.key]) : settings[spec.key]}" aria-describedby="${spec.key}-hint" />
-    <p id="${spec.key}-hint" class="hint">${spec.hint ?? ''}</p></div>`;
+    <p id="${spec.key}-hint" class="hint">${spec.hint ?? ''}</p>${spec.key === 'timeScale' ? '<p class="hint" id="achieved-speed"></p>' : ''}</div>`;
 }
 
 export function renderControls(settings: Settings) {

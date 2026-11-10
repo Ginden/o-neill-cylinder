@@ -209,3 +209,34 @@ test('live cloud updates retain spectral history and pausing converges the froze
   expect(result.resetSamples).toBe(0);
   expect(result.error).toBe(0);
 });
+
+test('weather worker completes all requested substeps in a small fast-rotating habitat', async ({ page }) => {
+  await openIsolatedPage(page);
+  const seconds = await page.evaluate(async () => {
+    const module='/src/settings.ts', {defaults}=await import(module);
+    const worker=new Worker(new URL('/src/weather/worker.ts',location.href),{type:'module'});
+    try {
+      return await new Promise<number>((resolve,reject) => {
+        let initialized=false;
+        worker.onerror=event=>reject(new Error(event.message));
+        worker.onmessage=({data})=>{
+          if (initialized) resolve(data.stats.seconds);
+          else {initialized=true;worker.postMessage({type:'step',dt:180,revision:1});}
+        };
+        worker.postMessage({type:'reset',settings:{...defaults,clouds:true,radius:0.5,length:4,gravity:2,pressure:0},revision:1});
+      });
+    } finally {worker.terminate();}
+  });
+  expect(seconds).toBeCloseTo(180,3);
+});
+
+test('shows achieved weather speed when a small habitat cannot reach the request', async ({ page }) => {
+  const settings={quality:'fast',clouds:true,paused:false,radius:0.5,length:4,humidity:78,timeScale:600};
+  await page.goto('/?s='+Buffer.from(JSON.stringify(settings)).toString('base64'));
+  await page.getByRole('tab',{name:'weather',exact:true}).click();
+  await page.waitForFunction(()=>/^Achieved \d+× of 600× requested$/.test(document.querySelector('#achieved-speed')?.textContent ?? ''));
+  const text=await page.locator('#achieved-speed').textContent();
+  const achieved=Number(text!.match(/\d+/)![0]);
+  expect(achieved).toBeGreaterThan(0);
+  expect(achieved).toBeLessThan(540);
+});

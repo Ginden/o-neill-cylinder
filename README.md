@@ -107,6 +107,11 @@ The CPU benchmark needs no browser or dev server. It reports medians of three
 warmed runs with dry and humid initial conditions, excluding setup and Mie
 table generation. `BENCHMARK_SOURCE=/path/to/checkout` measures another checkout
 with the same harness. Run comparisons sequentially to avoid CPU contention.
+Phase timings split projection, condensation and advection; pressure-product
+counts show the conjugate-gradient work. `BENCHMARK_DURATION=1800` also compares
+30-minute runs at rotation limits 0.3, 0.5 and 1; use
+`BENCHMARK_ROTATIONS=0.3` for a production-only run. The larger limits are
+experiments, not production settings.
 Its cache timings cover coefficient preparation, not the GPU light solve;
 clear air normally skips that work entirely.
 
@@ -283,7 +288,11 @@ path tracing in the mean (see *Accuracy*) and cuts noise per unit of work
 The optical snapshot contains liquid-water density only. It extends the field
 one cell beyond the curved wall for filtering, without adding simulated mass.
 
-Simulation speed is an upper bound: actual speed depends on CPU throughput.
+Simulation speed is a requested maximum. The weather panel reports achieved
+simulated seconds per active real second when it falls below 90% of the
+request; paused time is excluded. Work requests cover at most 0.3 real seconds
+so slow machines do not accumulate an unbounded backlog. Every requested
+simulated interval is fully substepped, with no silent substep cap.
 
 `WeatherSolver` is a coarse moist-convection model on a 24 × 24 × 48 grid:
 
@@ -295,11 +304,16 @@ Simulation speed is an upper bound: actual speed depends on CPU throughput.
 - saturation adjustment that conserves water and moist static energy.
 
 The pressure solve uses conjugate gradients on a precomputed sparse matrix,
-with the previous solution as its starting point. Its matrix product and
-dot product share a traversal. The projection targets a 10,000-fold
-reduction in divergence, bounded to 128 iterations per step; extreme grid
+with symmetric Gauss–Seidel preconditioning and the previous solution as its
+starting point. Its matrix product and dot product share a traversal. The
+projection targets about a 3,160-fold reduction in divergence, bounded to
+128 iterations per step; extreme grid
 aspect ratios can reach that limit before converging. Fully evaporated parcels
 are handled exactly, so unsaturated air does not accumulate numerical cloud water.
+Saturated parcels use safeguarded Newton adjustment with the analytic Magnus
+derivative and reuse one output parcel across grid cells. The production
+rotation timestep stays at 0.3/Ω: larger limits significantly change clouds
+and winds in long runs, despite the exact Coriolis rotation.
 Advection shares one interpolation stencil across all six transported fields.
 
 Humid air condenses in the colder air near the axis. The *Humid afternoon*

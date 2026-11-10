@@ -73,3 +73,13 @@ tops out near 200×; a CPU half as fast falls short of the default 120×.
   energy conservation, divergence after projection.
 - A test for item 1: at a requested speed the solver cannot reach, the
   reported speed is the achieved one.
+
+## Resolution (2026-11-10)
+
+Completed; measured results and rejected alternatives are recorded in
+[the task index](README.md#progress-2026-11-10). Reproduce phase timings with
+`node scripts/benchmark-weather.mjs`. Use `BENCHMARK_SOURCE` for an earlier
+checkout, and `BENCHMARK_DURATION=1800` for the timestep study; production
+uses 0.3/Ω throughout. `BENCHMARK_ROTATIONS=0.3` selects only that reference.
+The timestep-study override is confined to direct solver calls from the
+benchmark; the weather worker always uses the production default.

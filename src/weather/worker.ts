@@ -17,7 +17,7 @@ self.onmessage = (event: MessageEvent<
     if (message.revision !== revision) return;
     // Substeps honor the CFL and rotation limits while preserving requested time.
     let remaining = message.dt;
-    for (let i = 0; remaining > 0.001 && i < 32; i++) remaining -= solver.step(remaining);
+    while (remaining > 0.001) remaining -= solver.step(remaining);
   }
   const snapshot = solver.snapshot();
   self.postMessage({ ...snapshot, revision }, { transfer: [snapshot.data.buffer] });

@@ -14,14 +14,20 @@ export class WeatherClient {
   private revision = 0;
   private busy = true;
   private accumulator = 0;
-  stats: WeatherStats = { seconds: 0, maxWind: 0, cloudMass: 0, cloudFraction: 0, maxTemperatureAnomaly: 0 };
+  private activeSeconds = 0;
+  private measuredActiveSeconds = 0;
+  private measuredSimulatedSeconds = 0;
+  stats: WeatherStats = { seconds: 0, maxWind: 0, cloudMass: 0, cloudFraction: 0, maxTemperatureAnomaly: 0, achievedSpeed: 0 };
 
   constructor(settings: Settings, private readonly receive: (snapshot: WeatherSnapshot) => void) {
     this.worker.onmessage = (event: MessageEvent<WeatherSnapshot>) => {
       if (event.data.revision !== this.revision) return;
       this.busy = false;
-      this.stats = event.data.stats;
-      this.receive(event.data);
+      const elapsed=this.activeSeconds-this.measuredActiveSeconds;
+      this.stats = { ...event.data.stats, achievedSpeed: elapsed>0 ? (event.data.stats.seconds-this.measuredSimulatedSeconds)/elapsed : 0 };
+      this.measuredActiveSeconds=this.activeSeconds;
+      this.measuredSimulatedSeconds=event.data.stats.seconds;
+      this.receive({...event.data,stats:this.stats});
     };
     this.reset(settings);
   }
@@ -30,11 +36,14 @@ export class WeatherClient {
     this.revision++;
     this.busy = true;
     this.accumulator = 0;
+    this.activeSeconds=this.measuredActiveSeconds=this.measuredSimulatedSeconds=0;
+    this.stats.achievedSpeed=0;
     this.worker.postMessage({ type: 'reset', settings: { ...settings }, revision: this.revision });
   }
 
   update(deltaSeconds: number, settings: Settings) {
-    if (settings.paused || !settings.clouds || settings.pressure <= 0) return;
+    if (settings.paused || !settings.clouds || settings.pressure <= 0) {this.stats.achievedSpeed=0;return;}
+    this.activeSeconds += deltaSeconds;
     this.accumulator += deltaSeconds;
     if (this.busy || this.accumulator < 0.12) return;
     this.busy = true;

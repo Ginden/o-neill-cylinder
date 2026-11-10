@@ -46,29 +46,38 @@ export function saturationMixingRatio(temperature: number, pressure: number): nu
   return 0.622 * vaporPressure / Math.max(pressure - vaporPressure, 1);
 }
 
-/** Saturation adjustment conserves total water and cp*T + Lv*qv. */
-export function equilibrate(temperature: number, vapor: number, cloud: number, pressure: number) {
-  if (pressure <= 0) return { temperature, vapor: 0, cloud: 0 };
+export interface MoistParcel {temperature:number;vapor:number;cloud:number}
+
+/** Saturation adjustment conserves total water and cp*T + Lv*qv. An output
+ * parcel lets the grid reuse one object for all cells. */
+export function equilibrate(temperature: number, vapor: number, cloud: number, pressure: number,
+  result: MoistParcel = {temperature:0,vapor:0,cloud:0}) {
+  if (pressure <= 0) {
+    result.temperature=temperature;result.vapor=0;result.cloud=0;return result;
+  }
   const total = vapor + cloud;
-  // Test the fully evaporated endpoint, including its latent cooling. Bisection
-  // never reaches this endpoint exactly and would invent a little condensate
-  // in every unsaturated parcel, enough to activate the renderer's cloud cache.
   const evaporatedTemperature = temperature - LATENT_HEAT * cloud / HEAT_CAPACITY;
   if (total <= saturationMixingRatio(evaporatedTemperature, pressure)) {
-    return { temperature: evaporatedTemperature, vapor: total, cloud: 0 };
+    result.temperature=evaporatedTemperature;result.vapor=total;result.cloud=0;return result;
   }
   const energy = HEAT_CAPACITY * temperature + LATENT_HEAT * vapor;
-  let lo = 0;
-  let hi = total;
-  // Solve for equilibrium vapor, including warming due to latent heat release.
-  for (let iteration = 0; iteration < 24; iteration++) {
-    const candidate = (lo + hi) * 0.5;
-    const t = (energy - LATENT_HEAT * candidate) / HEAT_CAPACITY;
-    if (candidate > saturationMixingRatio(t, pressure)) hi = candidate;
-    else lo = candidate;
+  let lo = 0, hi = total, q = vapor;
+  // Safeguarded Newton on q - q_sat((energy - Lv*q)/cp) = 0.
+  // The Magnus derivative is analytic; evolved parcels are already near the
+  // root. The bracket also handles strongly supersaturated initial parcels.
+  for (let iteration=0;iteration<16;iteration++) {
+    const t=(energy-LATENT_HEAT*q)/HEAT_CAPACITY,c=t-273.15;
+    const e=611.2*Math.exp(17.67*c/(c+243.5)),denominator=Math.max(pressure-e,1);
+    const f=q-0.622*e/denominator;
+    if (Math.abs(f)<1e-11) break;
+    if (f>0) hi=q;else lo=q;
+    const de=e*17.67*243.5/((c+243.5)*(c+243.5));
+    const derivative=0.622*de*(pressure-e>1 ? pressure/(denominator*denominator) : 1);
+    const next=q-f/(1+LATENT_HEAT/HEAT_CAPACITY*derivative);
+    q=next>lo && next<hi ? next : (lo+hi)*0.5;
   }
-  const q = Math.min(total, (lo + hi) * 0.5);
-  return { temperature: (energy - LATENT_HEAT * q) / HEAT_CAPACITY, vapor: q, cloud: total - q };
+  result.temperature=(energy-LATENT_HEAT*q)/HEAT_CAPACITY;
+  result.vapor=q;result.cloud=total-q;return result;
 }
 
 export function isWindow(theta: number, fraction: number): boolean {

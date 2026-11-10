@@ -196,6 +196,8 @@ function start() {
     element('sightline').textContent = `${distance.toFixed(1)} km · B ${(transmission*100).toFixed(0)}%`;
     const seconds = Math.floor(renderer.stats.weather.seconds);
     element('sim-time').textContent = [Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v => String(v).padStart(2,'0')).join(':');
+    element('achieved-speed').textContent=!settings.paused && renderer.stats.weather.achievedSpeed>0 && renderer.stats.weather.achievedSpeed<settings.timeScale*0.9
+      ? `Achieved ${renderer.stats.weather.achievedSpeed.toFixed(0)}× of ${settings.timeScale}× requested` : '';
     element('cloud-fraction').textContent = `${(renderer.stats.weather.cloudFraction*100).toFixed(1)}%`;
     element('max-wind').textContent = `${renderer.stats.weather.maxWind.toFixed(1)} m/s`;
     element('cloud-mass').textContent = `${(renderer.stats.weather.cloudMass/1e6).toFixed(1)} kt`;

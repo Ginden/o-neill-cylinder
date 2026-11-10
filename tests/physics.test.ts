@@ -25,6 +25,21 @@ describe('centrifugal atmosphere', () => {
 });
 
 describe('moist thermodynamics', () => {
+  it('equilibrates cold, warm, low-pressure and strongly saturated parcels without losing water or energy', () => {
+    const output={temperature:0,vapor:0,cloud:0};
+    for (const temperature of [240,260,280,300,320]) for (const pressure of [1000,30000,101325,150000]) {
+      for (const vapor of [0,0.001,0.01,0.06]) for (const cloud of [0,0.003,0.02]) {
+        const result=equilibrate(temperature,vapor,cloud,pressure,output);
+        expect(result.vapor+result.cloud).toBeCloseTo(vapor+cloud,10);
+        expect(result.cloud).toBeGreaterThanOrEqual(0);
+        expect(result.vapor).toBeGreaterThanOrEqual(0);
+        expect(HEAT_CAPACITY*result.temperature+LATENT_HEAT*result.vapor).toBeCloseTo(HEAT_CAPACITY*temperature+LATENT_HEAT*vapor,6);
+        const saturated=saturationMixingRatio(result.temperature,pressure);
+        if (result.cloud>0) expect(result.vapor).toBeCloseTo(saturated,8);
+        else expect(result.vapor).toBeLessThanOrEqual(saturated);
+      }
+    }
+  });
   it('condenses supersaturation while conserving water and moist enthalpy', () => {
     const t = 293.15, q = 0.03, pressure = 101325;
     const result = equilibrate(t,q,0,pressure);

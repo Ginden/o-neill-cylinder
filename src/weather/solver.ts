@@ -6,6 +6,8 @@ import {
 
 export interface WeatherStats {
   seconds: number;
+  /** Simulated seconds per active real second, measured by WeatherClient. */
+  achievedSpeed: number;
   maxWind: number;
   cloudMass: number;
   cloudFraction: number;
@@ -137,8 +139,9 @@ export class WeatherSolver {
   }
 
   private condense() {
+    const parcel={temperature:0,vapor:0,cloud:0};
     for (const i of this.cells) {
-      const result = equilibrate(this.baseT[i] + this.temperature[i], this.vapor[i], this.cloud[i], this.baseP[i]);
+      const result = equilibrate(this.baseT[i] + this.temperature[i], this.vapor[i], this.cloud[i], this.baseP[i], parcel);
       this.temperature[i] = result.temperature - this.baseT[i];
       this.vapor[i] = result.vapor;
       this.cloud[i] = result.cloud;
@@ -230,6 +233,27 @@ export class WeatherSolver {
     return dot;
   }
 
+  /** Symmetric Gauss–Seidel: (D+U)^-1 D (D+L)^-1 r. */
+  private precondition(residual: Float32Array, out: Float32Array) {
+    for (const i of this.cells) {
+      let value=residual[i];
+      for (let k=this.pressureOffsets[i];k<this.pressureOffsets[i+1];k++) {
+        const j=this.pressureColumns[k];
+        if (j<i) value-=this.pressureValues[k]*out[j];
+      }
+      out[i]=value*this.inverseDiagonal[i];
+    }
+    for (let cell=this.cells.length-1;cell>=0;cell--) {
+      const i=this.cells[cell];
+      let upper=0;
+      for (let k=this.pressureOffsets[i];k<this.pressureOffsets[i+1];k++) {
+        const j=this.pressureColumns[k];
+        if (j>i) upper+=this.pressureValues[k]*out[j];
+      }
+      out[i]-=upper*this.inverseDiagonal[i];
+    }
+  }
+
   project() {
     this.enforceBoundary();
     const initial = this.velocityDivergence(this.u, this.v, this.w, this.divergence);
@@ -238,8 +262,9 @@ export class WeatherSolver {
     // This positive semidefinite operator is exactly the correction applied
     // below. A nearest-neighbor Laplacian does not match centered D and G and
     // leaves grid-scale divergence even when its pressure solve converges.
-    // Advection has finished with these buffers, so diagonally preconditioned
-    // CG needs no allocations. Stop at 1e-4 relative divergence, or 128 steps.
+    // Advection has finished with these buffers, so symmetric Gauss–Seidel
+    // preconditioned CG needs no allocations. Stop at sqrt(1e-7) relative
+    // divergence (below 0.001), or 128 steps.
     const [gx, gy, gz, residual, direction, product] = this.scratch;
     // Consecutive forcing steps usually need similar pressure corrections.
     // Reuse the preceding solve as the initial guess, but measure convergence
@@ -248,11 +273,12 @@ export class WeatherSolver {
     let squaredResidual = 0;
     let rho = 0;
     for (const i of this.cells) {
-      residual[i] = -this.divergence[i] - product[i];direction[i] = residual[i] * this.inverseDiagonal[i];
+      residual[i] = -this.divergence[i] - product[i];
       squaredResidual += residual[i] ** 2;
-      rho += residual[i] * direction[i];
     }
-    for (let iteration = 0; iteration < 128 && squaredResidual > initial * 1e-8; iteration++) {
+    this.precondition(residual,gx);direction.set(gx);
+    for (const i of this.cells) rho+=residual[i]*gx[i];
+    for (let iteration = 0; iteration < 128 && squaredResidual > initial * 1e-7; iteration++) {
       const denominator = this.pressureProduct(direction, product);
       const alpha = rho / denominator;
       let nextRho = 0;
@@ -261,10 +287,11 @@ export class WeatherSolver {
         this.pressure[i] += alpha * direction[i];
         residual[i] -= alpha * product[i];
         squaredResidual += residual[i] ** 2;
-        nextRho += residual[i] ** 2 * this.inverseDiagonal[i];
       }
+      this.precondition(residual,gx);
+      for (const i of this.cells) nextRho+=residual[i]*gx[i];
       const beta = nextRho / rho;
-      for (const i of this.cells) direction[i] = residual[i] * this.inverseDiagonal[i] + beta * direction[i];
+      for (const i of this.cells) direction[i] = gx[i] + beta * direction[i];
       rho = nextRho;
     }
     this.pressureGradient(this.pressure, gx, gy, gz);
@@ -290,11 +317,13 @@ export class WeatherSolver {
     }
   }
 
-  step(requestedDt: number) {
+  /** The optional rotation limit supports timestep convergence studies; the
+   * weather worker always uses the validated 0.3-radian production limit. */
+  step(requestedDt: number, rotationLimit=0.3) {
     let maxSpeed = 1;
     for (const i of this.cells) maxSpeed = Math.max(maxSpeed, Math.hypot(this.u[i], this.v[i], this.w[i]));
     const omega = angularVelocity(this.settings);
-    const dt = Math.min(requestedDt, 0.5 * Math.min(this.dx, this.dy, this.dz) / maxSpeed, omega > 0 ? 0.3 / omega : Infinity, 20);
+    const dt = Math.min(requestedDt, 0.5 * Math.min(this.dx, this.dy, this.dz) / maxSpeed, omega > 0 ? rotationLimit / omega : Infinity, 20);
     this.advect(dt);
     const s = this.settings;
     // Integrate Coriolis exactly: no spurious kinetic energy from Euler stepping.
@@ -360,7 +389,7 @@ export class WeatherSolver {
       }
     }
     const stats: WeatherStats = {
-      seconds: this.seconds, maxWind, cloudMass: mass,
+      seconds: this.seconds, achievedSpeed: 0, maxWind, cloudMass: mass,
       cloudFraction: cloudy / this.cells.length, maxTemperatureAnomaly
     };
     return { data, stats, dimensions: [this.nx, this.ny, this.nz] as const };

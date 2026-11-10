@@ -46,6 +46,22 @@ proposed fix and how to check it.
   With the surface atlas enabled, the standard profiler measures 60.60 ms
   at night against 84.48 ms in daylight.
 
+- **perf-07 complete:** achieved speed is measured from actual simulated and
+  active real time and shown beside the speed slider below 90% of the request;
+  pauses and superseded runs are excluded. The 32-substep cap is gone. Newton
+  saturation adjustment reuses a parcel, and symmetric Gauss–Seidel CG reduces
+  pressure iterations. Typed-index traversal was slower and rejected. A
+  sqrt(1e-7) relative projection tolerance passes the existing divergence and
+  energy tests. Measured steps improved from 22.8/31.9 ms (dry/humid) to
+  16.2/17.5 ms with phase instrumentation; condensation fell from 11.2 to
+  2.8 ms in humid air and pressure products from 26–30 to about 7.5 per step.
+  The production rotation limit remains 0.3/Ω: 30-minute timestep trials
+  rejected 0.5/Ω and 1/Ω because small-habitat cloud mass shifted 37–73%.
+  At the original limit, optimized versus original final cloud mass differs
+  by at most 0.062%, sampled peak wind by 0.11%, and divergence stays below
+  1.6e-7 s⁻¹ across four habitats. `npm run check` passes (51 tests); browser
+  checks verify a full 180-second job and the achieved-speed readout.
+
 All other tasks remain open. Current GPU baselines still show the cloudy
 cache taking about 235 ms per camera sample and clear-scene GPU utilization
 of 85%; these are not fixed by the completed work.

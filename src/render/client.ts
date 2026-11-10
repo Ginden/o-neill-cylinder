@@ -20,7 +20,7 @@ export class RenderClient {
   private readonly screenshots = new Map<number, { resolve: (blob: Blob) => void; reject: (error: Error) => void }>();
   stats: RenderStats = {
     samples: 0, mode: 'preview', raySize: '', accumulation: 0, luminance: null, clearAirBlueExtinction: 0,
-    weather: { seconds: 0, maxWind: 0, cloudMass: 0, cloudFraction: 0, maxTemperatureAnomaly: 0 },
+    weather: { seconds: 0, maxWind: 0, cloudMass: 0, cloudFraction: 0, maxTemperatureAnomaly: 0, achievedSpeed: 0 },
     fps: 0, sampleRate: 0
   };
 
