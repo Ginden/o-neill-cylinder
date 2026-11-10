@@ -71,6 +71,7 @@ test('switches cloud tracking and bands when a field gains and loses condensate'
     const rendererModule = '/src/render/renderer.ts', settingsModule = '/src/settings.ts', weatherModule = '/src/weather/solver.ts';
     const { HabitatRenderer } = await import(rendererModule), { defaults } = await import(settingsModule);
     const { WeatherSolver } = await import(weatherModule);
+    const transportModule='/src/weather/transport.ts',{prepareWeather}=await import(transportModule);
     const settings = { ...defaults, clouds: true, paused: true };
     const renderer = new HabitatRenderer(document.createElement('canvas'), settings);
     renderer.resize(512, 512, 'balanced', 1);
@@ -78,13 +79,13 @@ test('switches cloud tracking and bands when a field gains and loses condensate'
     const humid = { ...new WeatherSolver({ ...settings, humidity: 78 }).snapshot(), revision: 1 };
     const states: { clouds: boolean; bands: number }[] = [];
     const record = () => states.push({ clouds: renderer.material.uniforms.uClouds.value, bands: renderer.bands });
-    renderer.setWeather(dry); record();
+    renderer.setWeather(prepareWeather(dry,settings,renderer.transportOptics)); record();
     renderer.apply({ ...settings, exposure: 2 }); record();
-    renderer.setWeather(humid); record();
+    renderer.setWeather(prepareWeather(humid,settings,renderer.transportOptics)); record();
     renderer.apply({ ...settings, exposure: 3 }); record();
     renderer.apply({ ...settings, clouds: false }); record();
     renderer.apply(settings); record();
-    renderer.setWeather(dry); record();
+    renderer.setWeather(prepareWeather(dry,settings,renderer.transportOptics)); record();
     renderer.dispose();
     return states;
   });

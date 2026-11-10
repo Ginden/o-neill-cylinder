@@ -134,7 +134,11 @@ CIE Y relative to `SOLAR_ILLUMINANCE`, before display exposure or tone mapping.
 - The **main thread** runs the interface and navigation only.
 - A **render worker** owns WebGL (through an OffscreenCanvas), the light meter
   and the weather client.
-- The **weather solver** runs in its own worker.
+- The **weather worker** solves the flow and prepares cloud majorants and
+  diffusion coefficients. It receives four optical node rows per particle
+  population when sizes change, and transfers prepared arrays with snapshots.
+  The render worker applies matching settings and fields together and reuses
+  the majorant texture across snapshots. Empty fields skip diffusion work.
 - Up to four **Mie workers** compute particle scattering tables when a particle
   size changes.
 

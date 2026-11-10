@@ -22,11 +22,12 @@ try {
     const { defaults } = await import('/src/settings.ts');
     const { Navigation } = await import('/src/render/navigation.ts');
     const { WeatherSolver } = await import('/src/weather/solver.ts');
+    const { prepareWeather } = await import('/src/weather/transport.ts');
     const { paneRouteSources } = await import('/src/optics.ts');
     const W = 940, H = 800;
     function requireFields(habitat) {
       const fields = {
-        '': 'renderer preview camera canvas scene screenCamera material targets guideScene guideMaterial guideTarget diffusionScene diffusionMaterial cacheTargets displayScene displayMaterial denoiser exposureMeter surfaceTargets surfaceIndex surfaceSample cacheIteration band bands raySize samples mode resetAccumulation resetSurface',
+        '': 'renderer preview camera canvas scene screenCamera material targets guideScene guideMaterial guideTarget diffusionScene diffusionMaterial cacheTargets displayScene displayMaterial denoiser exposureMeter surfaceTargets surfaceIndex surfaceSample cacheIteration transportOptics band bands raySize samples mode resetAccumulation resetSurface',
         preview: 'bakeScene bakeCamera terrainMaterial terrain lightMaterial light bakeMesh scene materials prepare invalidate',
         denoiser: 'scene camera material targets', exposureMeter: 'scene camera material target'
       };
@@ -147,7 +148,7 @@ try {
       Object.assign(settings, defaults, { paused: true }, set);
       habitat.apply({ ...settings });
       nav.setView(view);
-      if (weather) habitat.setWeather(weather);
+      if (weather) habitat.setWeather(prepareWeather(weather,settings,habitat.transportOptics));
       Object.assign(habitat.material.uniforms.uLandUse, { value: true });
       Object.assign(habitat.material.uniforms.uSurfaceCache, { value: true });
       for (const [name, value] of Object.entries(uniforms)) habitat.material.uniforms[name].value = value;

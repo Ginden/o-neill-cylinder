@@ -127,6 +127,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     const rendererModule = '/src/render/renderer.ts', settingsModule = '/src/settings.ts', navigationModule = '/src/render/navigation.ts', weatherModule = '/src/weather/solver.ts';
     const { HabitatRenderer } = await import(rendererModule), { defaults } = await import(settingsModule);
     const { Navigation } = await import(navigationModule), { WeatherSolver } = await import(weatherModule);
+    const transportModule='/src/weather/transport.ts',{prepareWeather}=await import(transportModule);
     const settings = { ...defaults, quality: 'fast', clouds: true, humidity: 65, paused: true, adaptiveExposure: false };
     const canvas = document.createElement('canvas'); document.body.append(canvas);
     const renderer = new HabitatRenderer(canvas, settings);
@@ -140,7 +141,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     renderer.material.uniforms.uSurfaceCache.value = false;
     const solved = new WeatherSolver(settings).snapshot();
     const snapshot = { ...solved, stats: { ...solved.stats, cloudMass: 0 }, revision: 1 };
-    renderer.setWeather(snapshot);
+    renderer.setWeather(prepareWeather(snapshot,settings,renderer.transportOptics));
     renderer.material.uniforms.uClouds.value = true;
     const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const sample = async () => {
@@ -164,7 +165,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     const expected = new Float64Array(means[0].length);
     let difference = 0, scale = 0;
     for (let n = 0; n < 64; n++) {
-      renderer.setWeather(snapshot);
+      renderer.setWeather(prepareWeather(snapshot,settings,renderer.transportOptics));
       renderer.material.uniforms.uClouds.value = true;
       const actual = await sample();
       for (let i = 0; i < actual.length; i++) {
@@ -178,7 +179,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     renderer.apply(settings);
     renderer.material.uniforms.uClouds.value = true;
     // A last in-flight weather snapshot may arrive after the pause command.
-    renderer.setWeather(snapshot);
+    renderer.setWeather(prepareWeather(snapshot,settings,renderer.transportOptics));
     renderer.material.uniforms.uClouds.value = true;
     const samplesAtPause = renderer.samples;
     let paused = new Float32Array(0);
@@ -194,7 +195,7 @@ test('live cloud updates retain spectral history and pausing converges the froze
     const pausedSamples = renderer.samples;
     renderer.apply({ ...settings, paused: false });
     renderer.material.uniforms.uClouds.value = true;
-    renderer.setWeather({ ...snapshot, revision: 2 });
+    renderer.setWeather(prepareWeather({ ...snapshot, revision: 2 },settings,renderer.transportOptics));
     const resetSamples = renderer.samples;
     const error = renderer.renderer.getContext().getError();
     renderer.dispose(); canvas.remove();
@@ -214,6 +215,9 @@ test('weather worker completes all requested substeps in a small fast-rotating h
   await openIsolatedPage(page);
   const seconds = await page.evaluate(async () => {
     const module='/src/settings.ts', {defaults}=await import(module);
+    const cacheModule='/src/render/cache.ts',mieModule='/src/render/mie.ts';
+    const {cacheOptics}=await import(cacheModule),{particleOptics}=await import(mieModule);
+    const optics=cacheOptics([particleOptics(defaults.aerosolRadius,0.35,[1.5,0.01]),particleOptics(defaults.cloudRadius,0.35,[1.333,1e-9])]);
     const worker=new Worker(new URL('/src/weather/worker.ts',location.href),{type:'module'});
     try {
       return await new Promise<number>((resolve,reject) => {
@@ -223,7 +227,9 @@ test('weather worker completes all requested substeps in a small fast-rotating h
           if (initialized) resolve(data.stats.seconds);
           else {initialized=true;worker.postMessage({type:'step',dt:180,revision:1});}
         };
-        worker.postMessage({type:'reset',settings:{...defaults,clouds:true,radius:0.5,length:4,gravity:2,pressure:0},revision:1});
+        const settings={...defaults,clouds:true,radius:0.5,length:4,gravity:2,pressure:0};
+        worker.postMessage({type:'reset',settings,revision:1});
+        worker.postMessage({type:'transport',settings,optics,opticsRevision:1,revision:1});
       });
     } finally {worker.terminate();}
   });

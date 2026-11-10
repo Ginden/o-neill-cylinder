@@ -62,6 +62,20 @@ proposed fix and how to check it.
   1.6e-7 s⁻¹ across four habitats. `npm run check` passes (51 tests); browser
   checks verify a full 180-second job and the achieved-speed readout.
 
+- **perf-08 complete:** the weather worker prepares majorants and diffusion
+  arrays from four optical node rows per population, transferring the arrays
+  and `deep` with each snapshot. Particle rows are resent only for changed
+  radii; separate weather/optics generations reject stale replies. Settings
+  and matching fields are applied together, including paused updates. The
+  render worker reuses its majorant texture and only attaches prepared data.
+  Worker-versus-serial coefficient differences are exactly zero, and 24
+  repeated installations (including diffusion attachment) take at most
+  0.10 ms in the browser check. Empty fields and vacuum skip coefficients.
+  All 52 unit tests and 10 distinct worker/robustness browser tests pass;
+  the hardware profiler remains at 2.55–2.56 samples/s for humid scenes.
+  Coefficient work is moved, not removed: the CPU benchmark reports
+  10.5–13.9 ms for its refresh.
+
 All other tasks remain open. Current GPU baselines still show the cloudy
 cache taking about 235 ms per camera sample and clear-scene GPU utilization
 of 85%; these are not fixed by the completed work.

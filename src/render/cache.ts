@@ -63,18 +63,36 @@ function liquidAt(data:Float32Array,sampling:ReturnType<typeof makeWeatherSampli
   return value;
 }
 
+export interface OpticalNode {extinction:number;scattering:number;g:number}
+/** Only the four diffusion wavelengths and normalization/bound constants cross
+ * the weather-worker boundary, never the full phase tables. */
+export interface CacheOptics {
+  aerosol:OpticalNode[];cloud:OpticalNode[];
+  aerosolGreenExtinction:number;cloudMaximumExtinction:number;
+}
+export function cacheOptics(populations:[ParticleOptics,ParticleOptics]):CacheOptics {
+  const nodes=(optics:ParticleOptics)=>CACHE_WAVELENGTHS.map(lambda=>{
+    const bin=(lambda-380)/10;
+    return {extinction:optics.data[bin*PHASE_TABLE_SIZE*4+2],scattering:optics.data[bin*PHASE_TABLE_SIZE*4+3],g:asymmetry(optics.data,bin)};
+  });
+  return {aerosol:nodes(populations[0]),cloud:nodes(populations[1]),
+    aerosolGreenExtinction:populations[0].greenExtinction,cloudMaximumExtinction:populations[1].maximumExtinction};
+}
+
 /** Per-cell diffusion coefficient D = 1/(3σ_tr) (km) and absorption σ_a (1/km)
  * at the four node wavelengths, in the cache atlas layout. D is positive in
  * deep cells, where the diffusion equation replaces transport: σ_tr ≥ 5/km
  * there and in all six neighbors, away from terrain, windows and endcaps.
  * Elsewhere D is stored negated for neighboring deep cells. */
 export function diffusionCells(weather:WeatherField|undefined,s:Settings,populations:[ParticleOptics,ParticleOptics]) {
+  return diffusionFromOptics(weather,s,cacheOptics(populations));
+}
+
+export function diffusionFromOptics(weather:WeatherField|undefined,s:Settings,optics:CacheOptics) {
   const cells=CACHE_RADIAL*CACHE_ANGULAR*CACHE_AXIAL;
   const diffusion=new Float32Array(cells*4),absorption=new Float32Array(cells*4);
-  const bins=CACHE_WAVELENGTHS.map(lambda=>(lambda-380)/10);
-  const row=(optics:ParticleOptics,bin:number)=>({extinction:optics.data[bin*PHASE_TABLE_SIZE*4+2],scattering:optics.data[bin*PHASE_TABLE_SIZE*4+3],g:asymmetry(optics.data,bin)});
-  const aerosolScale=s.aerosol/populations[0].greenExtinction;
-  const aerosol=bins.map(bin=>row(populations[0],bin)),cloud=bins.map(bin=>row(populations[1],bin));
+  const {aerosol,cloud}=optics;
+  const aerosolScale=s.aerosol/optics.aerosolGreenExtinction;
   const rayleigh=CACHE_WAVELENGTHS.map(rayleighPerKm);
   let sampling:typeof weatherSampling;
   if (weather && s.clouds) {
@@ -110,6 +128,7 @@ export function diffusionCells(weather:WeatherField|undefined,s:Settings,populat
     }
   }
   // The outer neighbor must also stay clear of terrain and land-use objects.
+  let deep=false;
   const clearance=s.radius-TERRAIN_BOUND*s.terrainHeight-CANOPY_TOP;
   for (let i=1;i<CACHE_RADIAL;i++) {
     if (cacheRadii(i-1,s.radius).outer>=clearance) continue;
@@ -119,8 +138,9 @@ export function diffusionCells(weather:WeatherField|undefined,s:Settings,populat
         || !thick[index(i,(j+1)%CACHE_ANGULAR,k)] || !thick[index(i,(j+CACHE_ANGULAR-1)%CACHE_ANGULAR,k)]
         || !thick[cell-CACHE_ANGULAR*CACHE_RADIAL] || !thick[cell+CACHE_ANGULAR*CACHE_RADIAL]
         || (i<CACHE_RADIAL-1 && !thick[cell+CACHE_ANGULAR])) continue;
+      deep=true;
       for (let n=0;n<4;n++) diffusion[cell*4+n]=-diffusion[cell*4+n];
     }
   }
-  return {diffusion,absorption};
+  return {diffusion,absorption,deep};
 }

@@ -55,3 +55,12 @@ already holds the field, and transfer them with the snapshot.
 This moves cost; it does not remove it. If perf-07 leaves the weather worker
 saturated at high simulation speeds, refresh the coefficients every few
 snapshots instead of every one.
+
+## Resolution (2026-11-10)
+
+Completed; protocol and measured results are in the
+[task index](README.md#progress-2026-11-10). `src/weather/transport.ts` holds
+the preparation function and optical settings key. A direct renderer caller
+must call `prepareWeather` before `setWeather`; the application does that in
+the weather worker. `tests/browser/weather-transport.spec.ts` checks actual
+worker results, texture reuse, skipped work and installation time.

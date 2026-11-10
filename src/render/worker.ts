@@ -1,6 +1,8 @@
 import { HabitatRenderer } from './renderer';
 import { ParticlePool } from './particles';
 import type { Populations } from './particles';
+import { cacheOptics } from './cache';
+import type { CacheOptics } from './cache';
 import { WeatherClient } from '../weather/client';
 import type { WeatherSnapshot } from '../weather/client';
 import type { RenderRequest, RenderResponse, RenderState } from './protocol';
@@ -12,6 +14,7 @@ let latestWeather: WeatherSnapshot | undefined;
 let weatherDirty = false;
 let state: RenderState;
 let populations: Populations | undefined;
+let transportOptics:CacheOptics|undefined;
 let particleState = '';
 let appliedState = '';
 let size = '';
@@ -42,7 +45,7 @@ function fail(error: unknown) {
 const particles = new ParticlePool(undefined, event => fail(new Error(event.message)));
 
 function applyState() {
-  if (failed || !populations) return;
+  if (failed || !populations || !weather.matches(state.settings)) return;
   const nextState = JSON.stringify(state.settings);
   if (!renderer) {
     renderer = new HabitatRenderer(canvas, state.settings, populations);
@@ -58,19 +61,25 @@ function applyState() {
   }
 }
 
+function configureWeather() {
+  if (transportOptics && weather.configure(state.settings,transportOptics)) {
+    latestWeather=undefined;weatherDirty=false;
+  }
+}
+
 function updateState(next: RenderState) {
   state = next;
   if (state.resetWeather) weather.reset(state.settings);
   const key = JSON.stringify([state.settings.aerosolRadius, state.settings.cloudRadius]);
   if (key !== particleState) {
     particleState = key;
-    populations = undefined;
+    populations = undefined;transportOptics=undefined;
     particles.request(state.settings.aerosolRadius, state.settings.cloudRadius, result => {
-      populations = result;
-      try { applyState(); } catch (error) { fail(error); }
+      populations = result;transportOptics=cacheOptics(result);
+      try { configureWeather();applyState(); } catch (error) { fail(error); }
     });
   }
-  applyState();
+  configureWeather();applyState();
   post({ type: 'ack' });
 }
 
@@ -79,8 +88,10 @@ function frame(now: number) {
   try {
     weather.update((now - previous) / 1000, state.settings);
     previous = now;
+    const prepared=weather.matches(state.settings);
+    if (prepared && !renderer?.sampleInProgress) applyState();
     if (renderer) {
-      if (weatherDirty && !renderer.sampleInProgress) {
+      if (prepared && weatherDirty && !renderer.sampleInProgress) {
         renderer.setWeather(latestWeather!);
         weatherDirty = false;
       }

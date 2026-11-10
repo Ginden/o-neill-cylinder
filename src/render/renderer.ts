@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import type { Settings } from '../settings';
 import { backgroundAt,rayleighPerKm } from '../physics';
 import { mirrorGeometry, paneRouteSources, sunDirection } from '../optics';
-import { cloudMajorants } from './majorant';
 import { particleOptics, PHASE_TABLE_SIZE, SPECTRAL_BINS } from './mie';
 import type { Populations } from './particles';
 import { LAMP_RADIANCE_SCALE, SOLAR_ILLUMINANCE } from './solar';
@@ -23,8 +22,8 @@ import guides from './shaders/guides.glsl?raw';
 import { NavigationPreview } from './preview';
 import { terrainAtlasSize } from '../terrain';
 import { DisplayDenoiser,ExposureMeter } from './postprocess';
-import { CACHE_ANGULAR,CACHE_AXIAL,CACHE_RADIAL,diffusionCells } from './cache';
-import type { WeatherField } from './cache';
+import { CACHE_ANGULAR,CACHE_AXIAL,CACHE_RADIAL,cacheOptics } from './cache';
+import type { CacheOptics } from './cache';
 
 // Droplet scatterings traced exactly before a path ends in the cache. Cache
 // paths go further so that each iteration carries light across more cells.
@@ -58,7 +57,6 @@ export class HabitatRenderer {
   private cloudBounds: THREE.Data3DTexture;
   private readonly particleTextures=[0,1].map(()=>new THREE.DataTexture(new Float32Array(4),1,1,THREE.RGBAFormat,THREE.FloatType));
   private particleState='';
-  private cloudExtinction=150000;
   private aerosolExtinction=1;
   private aerosolBlueRatio=1;
   private readonly material: THREE.ShaderMaterial;
@@ -105,7 +103,7 @@ export class HabitatRenderer {
   });
   private readonly diffusionMaterial:THREE.ShaderMaterial;
   private readonly diffusionScene=new THREE.Scene();
-  private weatherField?:WeatherField;
+  private weatherTransport?:WeatherSnapshot['transport'];
   private diffusionDirty=true;
   private deepCloud=false;
   // Two float attachments like the camera and cache targets, of which only the
@@ -118,7 +116,7 @@ export class HabitatRenderer {
   private surfaceSample=0;
   private surfaceHistory=0;
   private surfaceBudget=0;
-  private populations?:Populations;
+  transportOptics!:CacheOptics;
   private settings:Settings;
   mode:'preview'|'path'='preview';
   samples=0;
@@ -210,7 +208,7 @@ export class HabitatRenderer {
     this.material.uniforms.uClouds.value=this.settings.clouds && this.cloudMass>0;
     this.updateBands(this.targets[0].width,this.targets[0].height);
     const [x,y,z] = snapshot.dimensions;
-    if (this.weather.image.width !== x) {
+    if (this.weather.image.width !== x || this.weather.image.height !== y || this.weather.image.depth !== z) {
       this.weather.dispose();
       this.weather = new THREE.Data3DTexture(snapshot.data, x, y, z);
       this.weather.format=THREE.RedFormat;
@@ -220,8 +218,8 @@ export class HabitatRenderer {
       this.weather.image.data = snapshot.data;
       this.weather.needsUpdate = true;
     }
-    this.updateCloudBounds();
-    this.weatherField={data:snapshot.data,dimensions:snapshot.dimensions};
+    this.updateCloudBounds(snapshot.transport.majorants,snapshot.dimensions);
+    this.weatherTransport=snapshot.transport;
     this.diffusionDirty=true;
     this.guidesDirty=true;
     // Live snapshots of the same run keep the cache as a warm start.
@@ -230,13 +228,14 @@ export class HabitatRenderer {
     this.weatherRevision=snapshot.revision;
   }
 
-  private updateCloudBounds() {
-    const {width:x,height:y,depth:z,data}=this.weather.image;
-    this.cloudBounds.dispose();
-    this.cloudBounds=new THREE.Data3DTexture(cloudMajorants(data as Float32Array,[x,y,z],this.cloudExtinction),x+1,y+1,z+1);
-    this.cloudBounds.format=THREE.RedFormat;
-    this.configureTexture(this.cloudBounds);
-    this.material.uniforms.uCloudMajorant.value=this.cloudBounds;
+  private updateCloudBounds(data:Float32Array,[x,y,z]:readonly [number,number,number]) {
+    const image=this.cloudBounds.image;
+    if (image.width!==x+1 || image.height!==y+1 || image.depth!==z+1) {
+      this.cloudBounds.dispose();
+      this.cloudBounds=new THREE.Data3DTexture(data,x+1,y+1,z+1);
+      this.cloudBounds.format=THREE.RedFormat;this.configureTexture(this.cloudBounds);
+      this.material.uniforms.uCloudMajorant.value=this.cloudBounds;
+    } else {image.data=data;this.cloudBounds.needsUpdate=true;}
   }
 
   apply(s: Settings, preparedPopulations?: Populations) {
@@ -259,10 +258,8 @@ export class HabitatRenderer {
       u.uAerosolScale.value=1/populations[0].greenExtinction;
       this.aerosolExtinction=populations[0].maximumExtinction/populations[0].greenExtinction;
       this.aerosolBlueRatio=populations[0].data[6*PHASE_TABLE_SIZE*4+2]/populations[0].greenExtinction;
-      this.cloudExtinction=populations[1].maximumExtinction;
       u.uCloudAsymmetry.value=populations[1].greenAsymmetry;
-      this.populations=populations;
-      this.updateCloudBounds();this.particleState=particleState;
+      this.transportOptics=cacheOptics(populations);this.particleState=particleState;
     }
     const scalar = {
       uRadius: s.radius, uLength: s.length, uGravity: s.gravity, uPressure: s.pressure,
@@ -308,13 +305,14 @@ export class HabitatRenderer {
     }
   }
 
-  /** Recomputed only when the cache is in use: the CPU pass covers every cell. */
+  /** Only attach the prepared arrays; coefficient construction stays on the
+   * weather worker, outside the render worker's frame and input loop. */
   private updateDiffusion() {
-    if (!this.populations) return;
     this.diffusionDirty=false;
-    const {diffusion,absorption}=diffusionCells(this.weatherField,this.settings,this.populations);
-    this.deepCloud=diffusion.some(value=>value>0);
-    this.diffusionTextures[0].image.data=diffusion;this.diffusionTextures[1].image.data=absorption;
+    const transport=this.weatherTransport;
+    this.deepCloud=transport?.deep ?? false;
+    if (!transport?.diffusion) return;
+    this.diffusionTextures[0].image.data=transport.diffusion;this.diffusionTextures[1].image.data=transport.absorption!;
     for (const texture of this.diffusionTextures) texture.needsUpdate=true;
   }
 
